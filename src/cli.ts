@@ -2,6 +2,7 @@
 
 import path from "node:path";
 import { loadConfig } from "./config.js";
+import { UsageError } from "./errors.js";
 import { buildScanPlan } from "./planner.js";
 import { assertRepositoryPath, profileRepository } from "./profile.js";
 import { runSecurityScan } from "./scanner.js";
@@ -14,7 +15,7 @@ import { validateCloudflareFindingsFile } from "./source-audit/validate.js";
 import type { Severity } from "./types.js";
 import { readFile } from "node:fs/promises";
 
-const VERSION = "0.3.0";
+const VERSION = "0.3.2";
 
 async function main(argv: string[]): Promise<number> {
   const [command, ...args] = argv;
@@ -225,7 +226,7 @@ Usage:
     [--fail-on <severity>]
   security-scan version
 
-Source-level audit (Cloudflare methodology — validation/import only; hunting runs in Cursor):
+Source-level audit (validation and import only; the Cursor skill runs the Cloudflare hunt):
   security-scan audit validate --repo <absolute-path> --findings <cloudflare-findings.json>
   security-scan audit import --repo <absolute-path> --findings <cloudflare-findings.json>
   security-scan audit attach --repo <absolute-path> --scan-dir <report-dir> --findings <cloudflare-findings.json>`);
@@ -283,7 +284,8 @@ main(process.argv.slice(2))
     process.exitCode = exitCode;
   })
   .catch((error: unknown) => {
-    const exitCode = error instanceof CliError ? error.exitCode : 4;
+    const exitCode =
+      error instanceof CliError || error instanceof UsageError ? error.exitCode : 4;
     console.error(error instanceof Error ? error.message : String(error));
     process.exitCode = exitCode;
   });

@@ -1,0 +1,17 @@
+rules:
+  - id: fixture.python.eval
+    message: Fixture rule for eval of request data.
+    severity: ERROR
+    languages: [python]
+    metadata:
+      cwe: ["CWE-95"]
+      confidence: HIGH
+    pattern: eval(...)
+  - id: fixture.react.dangerous-html
+    message: Fixture rule for unsanitized HTML injection.
+    severity: ERROR
+    languages: [typescript]
+    metadata:
+      cwe: ["CWE-79"]
+      confidence: HIGH
+    pattern-regex: dangerouslySetInnerHTML

@@ -1,6 +1,6 @@
 {
   "name": "@local/security-scan",
-  "version": "0.3.0",
+  "version": "0.3.2",
   "private": true,
   "description": "Local, reusable security scan orchestrator for Cursor",
   "type": "module",
@@ -14,7 +14,7 @@
     "test:containers": "npm run build && node dist/cli.js scan --repo . --mode standard --timeout 10m",
     "lint": "eslint .",
     "test:cloudflare-validators": "node --test third-party/cloudflare-security-audit/validate-findings.test.cjs",
-    "verify": "npm run test && npm run typecheck && npm run lint && npm run build"
+    "verify": "npm run test && npm run test:cloudflare-validators && npm run typecheck && npm run lint && npm run build"
   },
   "engines": {
     "node": ">=20"
@@ -25,6 +25,8 @@
   "devDependencies": {
     "@eslint/js": "9.38.0",
     "@types/node": "22.18.12",
+    "ajv": "8.17.1",
+    "ajv-formats": "3.0.1",
     "eslint": "9.38.0",
     "globals": "16.4.0",
     "tsx": "4.20.6",

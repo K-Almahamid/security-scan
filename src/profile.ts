@@ -1,6 +1,7 @@
 import { lstat, readFile, readdir, realpath } from "node:fs/promises";
 import path from "node:path";
 import type { SecurityScanConfig } from "./config.js";
+import { UsageError, isEnoent } from "./errors.js";
 import type { ComponentProfile, RepositoryProfile } from "./types.js";
 
 const ignoredDirectories = new Set([
@@ -15,10 +16,88 @@ const ignoredDirectories = new Set([
 ]);
 
 export async function assertRepositoryPath(input: string): Promise<string> {
-  const canonical = await realpath(path.resolve(input));
-  const stat = await lstat(canonical);
-  if (!stat.isDirectory()) throw new Error(`Repository path is not a directory: ${input}`);
-  return canonical;
+  try {
+    const canonical = await realpath(path.resolve(input));
+    const stat = await lstat(canonical);
+    if (!stat.isDirectory()) {
+      throw new UsageError(`Repository path is not a directory: ${input}`);
+    }
+    return canonical;
+  } catch (error) {
+    if (error instanceof UsageError) throw error;
+    const message = error instanceof Error ? error.message : String(error);
+    throw new UsageError(`Repository path is not usable: ${message}`);
+  }
+}
+
+export async function assertPathInsideRepository(
+  repoPath: string,
+  candidate: string,
+): Promise<string> {
+  const repo = await realpath(repoPath);
+  const resolvedInput = path.resolve(repoPath, candidate);
+  const fromInputRepo = path.relative(path.resolve(repoPath), resolvedInput);
+  if (fromInputRepo.startsWith("..") || path.isAbsolute(fromInputRepo)) {
+    throw new UsageError("Path must remain inside the target repository");
+  }
+  const resolved = fromInputRepo === "" ? repo : path.resolve(repo, fromInputRepo);
+  const segments = fromInputRepo === "" ? [] : fromInputRepo.split(path.sep);
+  let cursor = repo;
+  for (const segment of segments) {
+    cursor = path.join(cursor, segment);
+    try {
+      const stat = await lstat(cursor);
+      if (!stat.isSymbolicLink()) continue;
+      let target: string;
+      try {
+        target = await realpath(cursor);
+      } catch (error) {
+        if (error instanceof UsageError) throw error;
+        throw new UsageError("Path follows a symlink whose target cannot be resolved");
+      }
+      const targetRelative = path.relative(repo, target);
+      if (targetRelative.startsWith("..") || path.isAbsolute(targetRelative)) {
+        throw new UsageError("Path follows a symlink outside the target repository");
+      }
+    } catch (error) {
+      if (error instanceof UsageError) throw error;
+      if (isEnoent(error)) break;
+      throw error;
+    }
+  }
+  return fromInputRepo === "" ? repo : resolved;
+}
+
+export async function assertNoEscapingSymlinks(repoPath: string): Promise<void> {
+  const repo = await realpath(repoPath);
+  async function visit(directory: string): Promise<void> {
+    const entries = await readdir(directory, { withFileTypes: true });
+    for (const entry of entries) {
+      const absolute = path.join(directory, entry.name);
+      if (entry.isSymbolicLink()) {
+        let target: string;
+        try {
+          target = await realpath(absolute);
+        } catch (error) {
+          if (error instanceof UsageError) throw error;
+          throw new UsageError(
+            `Refusing to scan because a symlink target cannot be resolved: ${path.relative(repo, absolute)}`,
+          );
+        }
+        const relative = path.relative(repo, target);
+        if (relative.startsWith("..") || path.isAbsolute(relative)) {
+          throw new UsageError(
+            `Refusing to scan because a symlink escapes the repository: ${path.relative(repo, absolute)}`,
+          );
+        }
+        continue;
+      }
+      if (entry.isDirectory()) {
+        if (!ignoredDirectories.has(entry.name)) await visit(absolute);
+      }
+    }
+  }
+  await visit(repo);
 }
 
 export async function profileRepository(
@@ -61,6 +140,10 @@ async function walkFiles(root: string): Promise<string[]> {
         if (entry.isSymbolicLink()) return;
         const absolute = path.join(directory, entry.name);
         if (entry.isDirectory()) {
+          if (directory === root && entry.name === "security-reports") {
+            await collectReportManifests(root, absolute, files);
+            return;
+          }
           if (!ignoredDirectories.has(entry.name)) await visit(absolute);
           return;
         }
@@ -70,6 +153,25 @@ async function walkFiles(root: string): Promise<string[]> {
   }
   await visit(root);
   return files.sort();
+}
+
+async function collectReportManifests(
+  root: string,
+  directory: string,
+  files: string[],
+): Promise<void> {
+  const entries = await readdir(directory, { withFileTypes: true });
+  for (const entry of entries) {
+    if (entry.isSymbolicLink()) continue;
+    const absolute = path.join(directory, entry.name);
+    if (entry.isDirectory()) {
+      await collectReportManifests(root, absolute, files);
+      continue;
+    }
+    if (entry.isFile() && entry.name === "scan-manifest.json") {
+      files.push(path.relative(root, absolute).split(path.sep).join("/"));
+    }
+  }
 }
 
 function detectComponentPaths(files: string[]): string[] {

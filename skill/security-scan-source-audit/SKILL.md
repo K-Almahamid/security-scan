@@ -1,77 +1,87 @@
 ---
 name: security-scan-source-audit
-description: Optional agentic source-level security audit using Cloudflare's security-audit methodology, complementary to the deterministic Security Scan CLI. Use only when the user explicitly requests a full source audit, architecture review with trust boundaries, or Cloudflare-style coverage-led hunting after or alongside a standard scan.
+description: Runs the Cloudflare security-audit skill and attaches its validated findings to a Security Scan report. The default security-scan skill uses this as the Cloudflare layer of a full audit. Also use it when the user asks only for the source audit.
 disable-model-invocation: true
 ---
 
-# Security Scan — optional source-level audit
+# Security Scan — Cloudflare source audit
 
-This workflow is **separate** from `security-scan scan --mode standard`. The CLI does not
-launch multi-agent hunting. It only validates and imports Cloudflare-format
-`findings.json` artifacts produced by an agent run.
+This skill is the Cloudflare layer of a full security audit. It is not a CLI scanner. `security-scan scan` does not launch it. This skill does not reimplement `audit validate`, `audit import`, or `audit attach`.
 
-## When to use
+The three layers are:
 
-Use this skill when the user explicitly asks for:
+1. Trivy and Semgrep (and `dart analyze` when already available) — the deterministic CLI scan.
+2. This skill — reconnaissance, coverage-led hunting, candidate validation, structured findings, independent verification, and reporting, by following the upstream `security-audit` skill.
+3. The CLI attachment commands — schema validation and idempotent import into the scan report.
 
-- a full / comprehensive / end-to-end **source** security audit;
-- trust-boundary mapping and coverage-led investigation;
-- Cloudflare Security Audit Skill methodology; or
-- merging agentic audit results into an existing Security Scan report.
+## Do not recurse
 
-Do **not** use this for routine baseline scans — use the `security-scan` skill instead.
+If the `security-scan` skill dispatched this phase, a report directory already exists.
 
-## Prerequisites
+- Do not invoke the `security-scan` skill again.
+- Do not start a second standard scan or a second Cloudflare audit.
+- Continue with the upstream full audit, then validate and attach to that report directory.
 
-1. Install the upstream Cloudflare skill (source of truth for hunting prompts and safety rules):
-
-   ```bash
-   npx skills add https://github.com/cloudflare/security-audit-skill --skill security-audit
-   ```
-
-2. Install the local Security Scan CLI (`security-scan` on `PATH`).
-
-## Recommended flow
-
-### 1. Deterministic baseline (optional but recommended)
+If no report directory exists, run the CLI directly — not the `security-scan` skill:
 
 ```bash
 security-scan scan --repo "<absolute-repository-path>" --mode standard
 ```
 
-Record the report directory path (`security-reports/<scan-id>/`).
+## Prerequisites
 
-### 2. Agentic source audit (Cursor only)
+1. The upstream skill must be installed:
 
-Follow the upstream `security-audit` skill in **full audit mode**:
+   ```bash
+   npx skills add https://github.com/cloudflare/security-audit-skill --skill security-audit
+   ```
 
-- Read-only reconnaissance unless OS-enforced sandbox controls are available.
-- Never execute target code without network isolation, allowlisted environment,
-  read-only target/toolchain, scratch-only writes, and resource limits.
-- If sandbox requirements cannot be met, keep candidates as `needs_validation` —
-  never downgrade to confirmed.
+   It is expected at `~/.cursor/skills/security-audit/SKILL.md` or `~/.agents/skills/security-audit/SKILL.md`. If neither file exists, or this session cannot follow full audit mode, stop. Report that the Cloudflare workflow was **not executed** and why. Do not invent findings. The deterministic scan, if it already finished, stays complete or complete with findings. The combined audit is **incomplete**.
 
-Write artifacts to a directory **outside** the target repository unless the user
-explicitly chooses an ignored in-repo path.
+2. `security-scan` must be on `PATH`.
 
-### 3. Validate and attach (CLI)
+## Full audit mode
+
+Read the upstream `security-audit` skill and follow all six phases in order:
+
+1. Reconnaissance
+2. Coverage-led hunting
+3. Candidate validation
+4. Structured findings (`findings.json` plus the upstream validators)
+5. Independent record verification
+6. Reporting (`REPORT.md`, `FINDINGS-DETAIL.md`, `NEEDS-VALIDATION.md`, or an explicit `run_status: "incomplete"`)
+
+Guidance mode is not a full audit. A copied skill file is not an executed audit.
+
+Write artifacts outside the target repository, by default `~/security-audit-skill/<repo>/run-<N>`. Do not put them in the target's Git-tracked source. The scan report under `security-reports/<scan-id>/` is the only target location written, and only by `audit attach`.
+
+Do not execute target-controlled code unless the upstream OS sandbox is enforced: no external network, an allowlisted environment, a read-only target and toolchain, scratch-only writes, and resource limits. If that isolation is unavailable, do not run the target code. Keep the affected candidates `needs_validation` and record the blocker.
+
+Do not modify the target application. Do not scan production or external systems.
+
+## Validate and attach
+
+Only after the six phases finished and `findings.json` exists:
 
 ```bash
 security-scan audit validate --repo "<absolute-repository-path>" --findings "<path-to-findings.json>"
 security-scan audit attach --repo "<absolute-repository-path>" --scan-dir "<report-dir>" --findings "<path-to-findings.json>"
 ```
 
-`attach` fails closed if validation fails. Rejected candidates remain in
-`source-audit-records.json` and are not promoted to confirmed findings.
+`attach` fails closed when validation fails and leaves the previous report in place. Rejected records stay in `source-audit-records.json` and are not promoted to confirmed findings. Confirmed and `needs_validation` records stay importable, with provenance `source-audit`. Repeating attach with the same file is idempotent. Attachment does not execute repository code and is not a sandbox. Paths that escape the repository, including symlink escapes, are rejected.
+
+Same title or path does not merge a deterministic finding with an audit finding.
 
 ## Response requirements
 
-- State clearly that source audit is **agentic**, not a reproducible CLI scanner.
-- Distinguish `confirmed`, `needs_validation`, and `rejected` records.
-- Never claim comprehensive coverage because hunting completed.
-- Never auto-remediate the target application.
-- Never scan production systems or external targets.
+- Say whether the Cloudflare workflow executed. Do not say it ran because the skill file exists or because attach commands exist.
+- If it did not finish, say the combined audit is incomplete and keep the deterministic result separate.
+- Distinguish `confirmed`, `needs_validation`, and `rejected`.
+- List only the phases that finished.
+- Never claim comprehensive coverage.
+- Never auto-remediate the target.
 
 ## Attribution
 
 Hunting methodology and validators: [Cloudflare security-audit-skill](https://github.com/cloudflare/security-audit-skill) (MIT).
+The vendored validators in this repository check artifacts. They do not perform the hunt.

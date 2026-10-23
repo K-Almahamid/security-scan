@@ -1,4 +1,4 @@
-import { mkdir, writeFile } from "node:fs/promises";
+import { mkdir, rename, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { validateFindings } from "./findings.js";
 import type {
@@ -50,11 +50,11 @@ export function coverageSummary(
 ): ScanManifest["coverage"] {
   return {
     comprehensive: false,
-    plannedStatus: toolRuns.every(
-      (run) => run.status === "passed" || run.status === "findings",
-    )
-      ? "complete"
-      : "partial",
+    plannedStatus:
+      toolRuns.length === plan.tools.length &&
+      toolRuns.every((run) => run.status === "passed" || run.status === "findings")
+        ? "complete"
+        : "partial",
     plannedChecks: [
       ...new Set(
         plan.tools.flatMap((tool) =>
@@ -76,18 +76,26 @@ export async function writeReports(input: {
   findings: CanonicalFinding[];
 }): Promise<void> {
   validateFindings(input.findings);
-  await mkdir(input.reportDirectory, { recursive: true, mode: 0o700 });
-  await Promise.all([
-    writeJson(path.join(input.reportDirectory, "profile.json"), input.profile),
-    writeJson(path.join(input.reportDirectory, "scan-plan.json"), input.plan),
-    writeJson(path.join(input.reportDirectory, "scan-manifest.json"), input.manifest),
-    writeJson(path.join(input.reportDirectory, "findings.json"), input.findings),
-    writeFile(
-      path.join(input.reportDirectory, "report.md"),
-      renderMarkdownReport(input.manifest, input.findings),
-      { mode: 0o600 },
-    ),
-  ]);
+  const staging = `${input.reportDirectory}.partial`;
+  await rm(staging, { recursive: true, force: true });
+  await mkdir(staging, { recursive: true, mode: 0o700 });
+  try {
+    await Promise.all([
+      writeJson(path.join(staging, "profile.json"), input.profile),
+      writeJson(path.join(staging, "scan-plan.json"), input.plan),
+      writeJson(path.join(staging, "scan-manifest.json"), input.manifest),
+      writeJson(path.join(staging, "findings.json"), input.findings),
+      writeFile(
+        path.join(staging, "report.md"),
+        renderMarkdownReport(input.manifest, input.findings),
+        { mode: 0o600 },
+      ),
+    ]);
+    await rename(staging, input.reportDirectory);
+  } catch (error) {
+    await rm(staging, { recursive: true, force: true });
+    throw error;
+  }
 }
 
 async function writeJson(filePath: string, value: unknown): Promise<void> {
@@ -115,6 +123,17 @@ export function renderMarkdownReport(
     findings.length === 0
       ? "No normalized findings were reported by completed scanners. This is not a guarantee that the repository is secure."
       : `${findings.length} normalized finding(s) were reported. Prioritize critical and high severity items, then validate potential findings before remediation.`,
+    "",
+    "## Scanner layers",
+    "",
+    "| Layer | Execution |",
+    "|---|---|",
+    layerRow(manifest, "trivy", "Trivy"),
+    layerRow(manifest, "semgrep", "Semgrep CE"),
+    layerRow(manifest, "dart-analyze", "Dart analyzer"),
+    cloudflareRow(manifest),
+    "",
+    "Trivy, Semgrep, and the Dart analyzer are deterministic CLI adapters. The Cloudflare source audit is a separate agent workflow. This CLI does not launch it. `not executed` means no validated audit was attached.",
     "",
     "## Execution completeness",
     "",
@@ -237,14 +256,25 @@ export function renderMarkdownReport(
     );
   }
 
-  if (manifest.sourceAudit) {
+  lines.push(
+    "## Cloudflare source audit",
+    "",
+  );
+  if (!manifest.sourceAudit) {
     lines.push(
-      "## Optional source-level audit (agentic)",
+      "- Status: **not executed**",
+      "- Phase completion: none recorded by this CLI scan.",
       "",
+      "A full Cursor audit attaches records only after the upstream security-audit skill finishes and `audit validate` succeeds. This section does not mean that workflow ran.",
+      "",
+    );
+  } else {
+    lines.push(
       `- Status: **${manifest.sourceAudit.status}**`,
       `- Methodology: ${escapeMarkdown(manifest.sourceAudit.methodology)}`,
       `- Upstream commit: \`${escapeInline(manifest.sourceAudit.upstreamCommit)}\``,
-      `- Orchestration: ${manifest.sourceAudit.orchestration} (not launched by the deterministic CLI)`,
+      `- Orchestration: ${manifest.sourceAudit.orchestration}`,
+      "- Phase completion: not observed by the CLI. Attachment proves a validated findings file was imported.",
       `- Confirmed: ${manifest.sourceAudit.counts.confirmed}`,
       `- Needs validation: ${manifest.sourceAudit.counts.needs_validation}`,
       `- Rejected: ${manifest.sourceAudit.counts.rejected}`,
@@ -267,6 +297,20 @@ export function renderMarkdownReport(
     "",
   );
   return `${lines.join("\n")}\n`;
+}
+
+function layerRow(manifest: ScanManifest, adapter: string, label: string): string {
+  const runs = manifest.toolRuns.filter((run) => run.adapter === adapter);
+  if (runs.length === 0) return `| ${label} | not planned |`;
+  const findings = runs.reduce((total, run) => total + run.findingCount, 0);
+  const statuses = [...new Set(runs.map((run) => run.status))].join(", ");
+  return `| ${label} | ${statuses} (${findings} finding(s)) |`;
+}
+
+function cloudflareRow(manifest: ScanManifest): string {
+  if (!manifest.sourceAudit) return "| Cloudflare source audit | not executed |";
+  const counts = manifest.sourceAudit.counts;
+  return `| Cloudflare source audit | ${manifest.sourceAudit.status} (${counts.confirmed} confirmed, ${counts.needs_validation} needs validation, ${counts.rejected} rejected) |`;
 }
 
 function escapeMarkdown(value: string): string {

@@ -1,0 +1,52 @@
+{
+  "schemaVersion": 2,
+  "scanId": "fixture-scan",
+  "repositoryPath": "replaced-by-the-attachment-test",
+  "startedAt": "2026-01-01T00:00:00.000Z",
+  "completedAt": "2026-01-01T00:00:01.000Z",
+  "overallStatus": "complete",
+  "mode": "standard",
+  "toolRuns": [
+    {
+      "id": "trivy-repository",
+      "adapter": "trivy",
+      "componentId": null,
+      "status": "passed",
+      "startedAt": "2026-01-01T00:00:00.000Z",
+      "completedAt": "2026-01-01T00:00:01.000Z",
+      "durationMs": 1000,
+      "exitCode": 0,
+      "version": "0.67.2",
+      "reason": null,
+      "logPath": null,
+      "findingCount": 0
+    }
+  ],
+  "execution": {
+    "status": "complete",
+    "planned": 1,
+    "completed": 1,
+    "failed": 0,
+    "skipped": 0,
+    "unsupported": 0
+  },
+  "coverage": {
+    "comprehensive": false,
+    "plannedStatus": "complete",
+    "plannedChecks": [],
+    "supportedChecks": ["Repository secret detection"],
+    "outOfScope": ["Dynamic application security testing (DAST) and arbitrary remote target scanning"],
+    "unsupported": []
+  },
+  "coverageGaps": [],
+  "counts": {
+    "critical": 0,
+    "high": 0,
+    "medium": 0,
+    "low": 0,
+    "info": 0,
+    "unknown": 0
+  },
+  "rawArtifactsPath": "/tmp/security-scan-fixture-raw",
+  "reportDirectory": "replaced-by-the-attachment-test"
+}

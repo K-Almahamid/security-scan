@@ -5,7 +5,9 @@ import {
   persistProcessLog,
   runCommand,
   runComposeTool,
+  type ProcessResult,
 } from "./execution.js";
+import { UsageError } from "./errors.js";
 import {
   createFinding,
   normalizePath,
@@ -14,11 +16,145 @@ import {
 } from "./findings.js";
 import type {
   AdapterContext,
+  AdapterResult,
   CanonicalFinding,
   ToolAdapter,
   ToolPlan,
   ToolRun,
+  ToolStatus,
 } from "./types.js";
+
+export interface ToolCompletion {
+  status: Extract<ToolStatus, "passed" | "findings" | "failed">;
+  findings: CanonicalFinding[];
+  reason: string | null;
+  exitCode: number | null;
+}
+
+export function finalizeToolExecution(input: {
+  family: ToolPlan["adapter"];
+  exitCode: number | null;
+  timedOut: boolean;
+  documentValid: boolean;
+  documentError?: string;
+  findings: CanonicalFinding[];
+}): ToolCompletion {
+  if (input.timedOut) {
+    return { status: "failed", findings: [], reason: "Timed out", exitCode: input.exitCode };
+  }
+  if (!input.documentValid) {
+    return {
+      status: "failed",
+      findings: [],
+      reason: input.documentError ?? "Scanner output did not match the expected document",
+      exitCode: input.exitCode,
+    };
+  }
+  const completed =
+    input.family === "semgrep"
+      ? input.exitCode === 0 || input.exitCode === 1
+      : input.family === "dart-analyze"
+        ? input.exitCode === 0 || (input.exitCode !== 0 && input.findings.length > 0)
+        : input.exitCode === 0;
+  if (!completed) {
+    return {
+      status: "failed",
+      findings: [],
+      reason: `Exited with ${String(input.exitCode)}`,
+      exitCode: input.exitCode,
+    };
+  }
+  if (input.family === "semgrep" && input.exitCode === 1 && input.findings.length === 0) {
+    return {
+      status: "failed",
+      findings: [],
+      reason: "Semgrep exited 1 but the JSON document contained no results",
+      exitCode: input.exitCode,
+    };
+  }
+  return {
+    status: input.findings.length > 0 ? "findings" : "passed",
+    findings: input.findings,
+    reason: null,
+    exitCode: input.exitCode,
+  };
+}
+
+export function readTrivyDocument(input: unknown): { valid: boolean; error?: string } {
+  if (!isRecord(input) || !Array.isArray(input.Results)) {
+    return { valid: false, error: "Trivy JSON is missing a Results array" };
+  }
+  return { valid: true };
+}
+
+export function readSemgrepDocument(input: unknown): { valid: boolean; error?: string } {
+  if (!isRecord(input) || !Array.isArray(input.results)) {
+    return { valid: false, error: "Semgrep JSON is missing a results array" };
+  }
+  if (Array.isArray(input.errors) && input.errors.length > 0) {
+    return { valid: false, error: "Semgrep JSON reported rule or parse errors" };
+  }
+  return { valid: true };
+}
+
+export function buildTrivyArgs(outputName: string, exclude: string[], offline: boolean): string[] {
+  const args = [
+    "fs",
+    "--skip-version-check",
+    "--format",
+    "json",
+    "--output",
+    `/out/${safeOutputName(outputName)}`,
+    "--scanners",
+    "vuln,secret,misconfig",
+  ];
+  for (const excluded of exclude) args.push("--skip-dirs", excluded);
+  if (offline) args.push("--skip-db-update", "--offline-scan");
+  args.push("/src");
+  return args;
+}
+
+export function buildSemgrepArgs(input: {
+  outputName: string;
+  exclude: string[];
+  offline: boolean;
+  checks: string[];
+  targetPath: string;
+}): string[] {
+  const args = [
+    "semgrep",
+    "scan",
+    "--metrics=off",
+    "--disable-version-check",
+    "--json",
+    "--output",
+    `/out/${safeOutputName(input.outputName)}`,
+  ];
+  for (const excluded of input.exclude) args.push("--exclude", excluded);
+  if (!input.offline) args.push("--config", "p/default", "--config", "p/security-audit");
+  if (input.checks.includes("bundled-flutter-security")) {
+    args.push("--config", "/rules/flutter-security.yml", "--config", "/rules/mobile-config.yml");
+  }
+  args.push(containerSourcePath(input.targetPath));
+  return args;
+}
+
+export function containerSourcePath(targetPath: string): string {
+  if (targetPath === ".") return "/src";
+  if (
+    path.isAbsolute(targetPath) ||
+    targetPath.split(/[\\/]/).includes("..") ||
+    targetPath.startsWith("/")
+  ) {
+    throw new UsageError("Scanner target path escapes the repository");
+  }
+  return `/src/${targetPath.split(path.sep).join("/")}`;
+}
+
+function safeOutputName(name: string): string {
+  if (!/^[A-Za-z0-9._-]+$/.test(name)) throw new UsageError("Unsafe scanner output name");
+  return name;
+}
 
 export function createAdapters(): Map<ToolPlan["adapter"], ToolAdapter> {
   return new Map([
@@ -43,49 +179,24 @@ const trivyAdapter: ToolAdapter = {
       args: ["--version"],
       timeoutMs: Math.min(context.timeoutMs, 60_000),
     });
-    const args = [
-      "fs",
-      "--format",
-      "json",
-      "--output",
-      `/out/${outputName}`,
-      "--scanners",
-      "vuln,secret,misconfig",
-    ];
-    for (const excluded of context.exclude) args.push("--skip-dirs", excluded);
-    if (context.offline) args.push("--skip-db-update", "--offline-scan");
-    args.push("/src");
     const result = await runComposeTool({
       composeFile: context.composeFile,
       service: "trivy",
       repoPath: context.repoPath,
       rawDirectory: context.rawDirectory,
-      args,
+      args: buildTrivyArgs(outputName, context.exclude, context.offline),
       timeoutMs: context.timeoutMs,
     });
-    const logPath = await persistProcessLog(context.rawDirectory, plan.id, {
-      ...result,
-      stdout: redactSensitiveText(result.stdout, 100_000),
-      stderr: redactSensitiveText(result.stderr, 100_000),
+    return finishJsonTool({
+      plan,
+      context,
+      outputName,
+      result,
+      version: (versionResult.stdout || versionResult.stderr).trim() || null,
+      family: "trivy",
+      readDocument: readTrivyDocument,
+      parse: (document) => parseTrivy(document, context.repoPath, plan.componentId),
     });
-    const findings =
-      result.exitCode === 0
-        ? parseTrivy(
-            JSON.parse(await readFile(path.join(context.rawDirectory, outputName), "utf8")) as unknown,
-            context.repoPath,
-            plan.componentId,
-          )
-        : [];
-    return {
-      findings,
-      run: completeRun(
-        plan,
-        result,
-        findings,
-        (versionResult.stdout || versionResult.stderr).trim() || null,
-        logPath,
-      ),
-    };
   },
 };
 
@@ -109,44 +220,30 @@ const semgrepAdapter: ToolAdapter = {
       args: ["semgrep", "--version"],
       timeoutMs: Math.min(context.timeoutMs, 60_000),
     });
-    const args = ["semgrep", "scan", "--json", "--output", `/out/${outputName}`];
-    for (const excluded of context.exclude) args.push("--exclude", excluded);
-    if (!context.offline) args.push("--config", "p/default", "--config", "p/security-audit");
-    if (plan.checks.includes("bundled-flutter-security")) {
-      args.push("--config", "/rules/flutter-security.yml", "--config", "/rules/mobile-config.yml");
-    }
-    args.push(plan.targetPath === "." ? "/src" : `/src/${plan.targetPath}`);
     const result = await runComposeTool({
       composeFile: context.composeFile,
       service: "semgrep",
       repoPath: context.repoPath,
       rawDirectory: context.rawDirectory,
-      args,
+      args: buildSemgrepArgs({
+        outputName,
+        exclude: context.exclude,
+        offline: context.offline,
+        checks: plan.checks,
+        targetPath: plan.targetPath,
+      }),
       timeoutMs: context.timeoutMs,
     });
-    const logPath = await persistProcessLog(context.rawDirectory, plan.id, {
-      ...result,
-      stdout: redactSensitiveText(result.stdout, 100_000),
-      stderr: redactSensitiveText(result.stderr, 100_000),
+    return finishJsonTool({
+      plan,
+      context,
+      outputName,
+      result,
+      version: (versionResult.stdout || versionResult.stderr).trim() || null,
+      family: "semgrep",
+      readDocument: readSemgrepDocument,
+      parse: (document) => parseSemgrep(document, context.repoPath, plan.componentId),
     });
-    const findings =
-      result.exitCode === 0
-        ? parseSemgrep(
-            JSON.parse(await readFile(path.join(context.rawDirectory, outputName), "utf8")) as unknown,
-            context.repoPath,
-            plan.componentId,
-          )
-        : [];
-    return {
-      findings,
-      run: completeRun(
-        plan,
-        result,
-        findings,
-        (versionResult.stdout || versionResult.stderr).trim() || null,
-        logPath,
-      ),
-    };
   },
 };
 
@@ -186,18 +283,20 @@ const dartAnalyzeAdapter: ToolAdapter = {
       stdout: redactSensitiveText(result.stdout, 100_000),
       stderr: redactSensitiveText(result.stderr, 100_000),
     });
-    const acceptedResult =
-      result.exitCode !== 0 && findings.length > 0 ? { ...result, exitCode: 0 } : result;
-    return {
+    const completion = finalizeToolExecution({
+      family: "dart-analyze",
+      exitCode: result.exitCode,
+      timedOut: result.timedOut,
+      documentValid: true,
       findings,
-      run: completeRun(
-        plan,
-        acceptedResult,
-        findings,
-        (versionResult.stdout || versionResult.stderr).trim() || null,
-        logPath,
-      ),
-    };
+    });
+    return finishRun(
+      plan,
+      result,
+      completion,
+      (versionResult.stdout || versionResult.stderr).trim() || null,
+      logPath,
+    );
   },
 };
 
@@ -210,30 +309,75 @@ async function dockerPrerequisite(context: AdapterContext): Promise<string | nul
   return result?.exitCode === 0 ? null : "Docker Compose is unavailable";
 }
 
-function completeRun(
+async function finishJsonTool(input: {
+  plan: ToolPlan;
+  context: AdapterContext;
+  outputName: string;
+  result: ProcessResult;
+  version: string | null;
+  family: "trivy" | "semgrep";
+  readDocument: (value: unknown) => { valid: boolean; error?: string };
+  parse: (value: unknown) => CanonicalFinding[];
+}): Promise<AdapterResult> {
+  const logPath = await persistProcessLog(input.context.rawDirectory, input.plan.id, {
+    ...input.result,
+    stdout: redactSensitiveText(input.result.stdout, 100_000),
+    stderr: redactSensitiveText(input.result.stderr, 100_000),
+  });
+  const document = await readJsonOutput(input.context.rawDirectory, input.outputName);
+  const parsed = document.ok
+    ? input.readDocument(document.value)
+    : { valid: false, error: document.error };
+  const findings = document.ok && parsed.valid ? input.parse(document.value) : [];
+  const completion = finalizeToolExecution({
+    family: input.family,
+    exitCode: input.result.exitCode,
+    timedOut: input.result.timedOut,
+    documentValid: parsed.valid,
+    ...(parsed.error ? { documentError: parsed.error } : {}),
+    findings,
+  });
+  return finishRun(input.plan, input.result, completion, input.version, logPath);
+}
+
+async function readJsonOutput(
+  rawDirectory: string,
+  outputName: string,
+): Promise<{ ok: true; value: unknown } | { ok: false; error: string }> {
+  try {
+    return {
+      ok: true,
+      value: JSON.parse(await readFile(path.join(rawDirectory, outputName), "utf8")) as unknown,
+    };
+  } catch {
+    return { ok: false, error: "Scanner output is missing or is not valid JSON" };
+  }
+}
+
+function finishRun(
   plan: ToolPlan,
-  result: { exitCode: number | null; timedOut: boolean; durationMs: number },
-  findings: CanonicalFinding[],
+  result: ProcessResult,
+  completion: ToolCompletion,
   version: string | null,
   logPath: string,
-): ToolRun {
+): AdapterResult {
   const completedAt = new Date();
   const startedAt = new Date(completedAt.getTime() - result.durationMs);
-  const failed = result.exitCode !== 0 || result.timedOut;
-  return {
+  const run: ToolRun = {
     id: plan.id,
     adapter: plan.adapter,
     componentId: plan.componentId,
-    status: failed ? "failed" : findings.length > 0 ? "findings" : "passed",
+    status: completion.status,
     startedAt: startedAt.toISOString(),
     completedAt: completedAt.toISOString(),
     durationMs: result.durationMs,
     exitCode: result.exitCode,
     version,
-    reason: result.timedOut ? "Timed out" : failed ? `Exited with ${String(result.exitCode)}` : null,
+    reason: completion.reason,
     logPath,
-    findingCount: findings.length,
+    findingCount: completion.findings.length,
   };
+  return { findings: completion.findings, run };
 }
 
 export function parseTrivy(

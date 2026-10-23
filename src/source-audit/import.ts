@@ -1,9 +1,10 @@
 import { createHash, randomUUID } from "node:crypto";
+import { UsageError } from "../errors.js";
 import {
   createFinding,
-  normalizePath,
   normalizeSeverity,
   redactSensitiveText,
+  repositoryRelativePath,
 } from "../findings.js";
 import type { AuditVerdict, CanonicalFinding, Severity } from "../types.js";
 
@@ -26,7 +27,7 @@ export interface SourceAuditImportResult {
 
 export function parseCloudflareFindings(raw: unknown): CloudflareFindingRecord[] {
   if (!Array.isArray(raw)) {
-    throw new Error("Source audit findings must be a JSON array");
+    throw new UsageError("Source audit findings must be a JSON array");
   }
   return raw as CloudflareFindingRecord[];
 }
@@ -133,8 +134,12 @@ function primaryLocation(
   const file = sink?.file ?? evidence?.file;
   const line = sink?.line ?? evidence?.line;
   if (!file) return {};
+  const relative = repositoryRelativePath(repoPath, file);
+  if (!relative) {
+    throw new UsageError(`Source-audit path escapes the repository: ${file}`);
+  }
   return {
-    path: normalizePath(repoPath, file),
+    path: relative,
     ...(line ? { startLine: line, endLine: line } : {}),
   };
 }

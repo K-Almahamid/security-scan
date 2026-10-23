@@ -5,10 +5,11 @@ repositories. It profiles a target, runs the checks that apply, and writes
 normalized findings and reports.
 
 It is for developers and reviewers who want a repeatable baseline from the
-command line or from Cursor. A standard scan uses deterministic tools. An
-optional source-level audit is a separate Cursor workflow: an agent investigates
-the source, and the CLI only validates and attaches the artifact that agent
-produces.
+command line or from Cursor. A standard CLI scan uses deterministic tools.
+A full audit in the `security-scan` Cursor skill also runs the Cloudflare
+source-audit skill, then validates and attaches that artifact. The CLI does
+not launch the Cloudflare agents. Ask for a deterministic-only scan when the
+Cloudflare layer should not run.
 
 The scan reads application code and writes its report into the target
 repository. It does not change application source, install the target's
@@ -20,30 +21,42 @@ every vulnerability was found.
 ## Architecture
 
 ```text
-User
-  → Cursor Skill (workflow instructions)
-    → Security Scan CLI (deterministic orchestration)
-      → Trivy, Semgrep CE, and applicable Dart checks
-        → normalized findings and reports in the target repository
+Full audit in Cursor
+  → security-scan skill
+    → Security Scan CLI: Trivy, Semgrep CE, and applicable Dart checks
+    → upstream security-audit skill, when it is installed and the agent can run it
+    → audit validate and audit attach
+      → one report in the target repository
+
+Deterministic-only
+  → security-scan skill
+    → Security Scan CLI only
 ```
 
 - The [Cursor Skills](#cursor-skills) tell Cursor when to run a workflow and how
-  to read the result. They do not replace the CLI.
+  to read the result. They do not replace the CLI, and the CLI does not launch
+  Cloudflare agents.
 - The CLI profiles the repository, plans checks, runs adapters, and writes the
   report. `security-scan scan --mode standard` is the only scan mode
   implemented.
+- Trivy covers dependency vulnerabilities, secrets, and supported
+  misconfigurations. Semgrep CE covers static source analysis. The Cloudflare
+  skill is a separate multi-phase source audit with its own validation.
 - Trivy and Semgrep CE run in separate containers. `dart analyze` runs on the
   host only when a Dart workspace is already resolved.
 - Reports are written into the target repository, under `security-reports/` by
-  default.
+  default. Cloudflare hunt artifacts stay outside the target, under
+  `~/security-audit-skill/<repo>/run-<N>` by upstream default.
 - [GitHub](https://github.com/K-Almahamid/security-scan) hosts this source
   repository and its [verification workflow](.github/workflows/verify.yml). A
   push does not scan your application. Scans run on the machine where you
   invoke the CLI.
 
-The optional source audit is outside that chain. Cursor runs the upstream
-Cloudflare hunting methodology. The CLI validates, imports, and attaches the
-resulting `findings.json`. It does not launch those agents.
+`audit validate`, `audit import`, and `audit attach` check and merge a findings
+file the agent already produced. They do not perform reconnaissance, hunting,
+or independent verification. A missing skill, a skipped phase, or a failed
+validation leaves the combined audit incomplete. The deterministic scan keeps
+its own status and exit code.
 
 ## Requirements
 
@@ -131,44 +144,59 @@ workflow. Neither skill edits the target or remediates findings.
 
 ### `security-scan`
 
-Manual standard-scan workflow.
+Default full-audit workflow, with an explicit deterministic-only option.
 
-- **Use it** at the end of development, when you want the deterministic baseline.
-- **It invokes** `security-scan scan --repo "<absolute-repository-path>" --mode standard`,
-  plus safe options you asked for (`--offline`, `--fail-on`, `--reports-dir`).
+- **Use it** when you ask for a full security scan or security audit. The skill
+  runs the standard CLI scan and then the Cloudflare source audit.
+- **Deterministic-only:** say so explicitly ("deterministic-only", "standard
+  scan only", or "without the Cloudflare source audit"). The skill then runs
+  only `security-scan scan --repo "<absolute-repository-path>" --mode standard`.
+- **It invokes** that CLI command, plus safe options you asked for
+  (`--offline`, `--fail-on`, `--reports-dir`). For a full audit it then follows
+  the installed upstream `security-audit` skill and calls `audit validate` and
+  `audit attach`.
 - **Prerequisites:** `security-scan` on `PATH`, plus the [scan requirements](#requirements).
-  If the command is missing, the skill stops.
-- **Output:** the skill reads `scan-manifest.json`, `findings.json`, and
-  `report.md`, preserves the CLI exit code, and summarizes status, coverage,
-  findings, and failures.
-- **Limitations:** it does not launch the Cloudflare audit, request a remote
-  target, run DAST, install dependencies, or change application code.
+  The Cloudflare layer also needs the upstream skill on disk and a session that
+  can follow its full audit mode. If either is missing, the skill says the
+  Cloudflare workflow was not executed. The CLI result stands, and the combined
+  audit is incomplete.
+- **Output:** `scan-manifest.json`, `findings.json`, and `report.md`. The report
+  lists Trivy, Semgrep, the Dart analyzer, and Cloudflare separately. Cloudflare
+  phase completion is recorded by the agent only for phases that finished. The
+  CLI records `not executed` until a validated file is attached, and even then
+  it does not claim to have observed the phases.
+- **Limitations:** the CLI does not launch Cloudflare agents. The skill does not
+  request a remote target, run DAST, install dependencies, or change application
+  code. Exit `1` means the deterministic scan found issues at the threshold. It
+  is not a scanner crash, and it is not a Cloudflare result.
 
 ### `security-scan-source-audit`
 
-Optional, separate source-level audit. The agent follows the upstream
+The Cloudflare layer used by the default full audit. The agent follows the
+upstream
 [Cloudflare security-audit-skill](https://github.com/cloudflare/security-audit-skill).
 The CLI does not run those hunting agents.
 
-- **Use it** when you explicitly want a full source audit, trust-boundary
-  mapping, coverage-led investigation, or the Cloudflare methodology. Routine
-  baselines stay on `security-scan`.
+- **Use it** as part of the full `security-scan` workflow, or on its own when
+  you want only the source audit attached to an existing report.
 - **What runs where:**
-  1. Cursor performs the source-level audit and writes a Cloudflare-format
-     `findings.json`.
-  2. `security-scan audit validate` checks that file.
-  3. `security-scan audit attach` merges importable records into an existing
-     scan report.
+  1. The deterministic CLI scan, already done when the parent skill dispatched
+     this phase. This skill does not call the `security-scan` skill again.
+  2. Cursor follows the upstream skill's six phases and writes a
+     Cloudflare-format `findings.json` outside the target repository.
+  3. `security-scan audit validate` checks that file.
+  4. `security-scan audit attach` merges importable records into the scan report.
 - **Prerequisites:** the upstream `security-audit` skill, and `security-scan`
-  on `PATH`. A standard scan first is recommended so you have a report
-  directory to attach to.
-- **Output:** a validated `findings.json` from the agent, then an updated scan
-  report. `attach` writes `source-audit-records.json` and refreshes
-  `findings.json`, `scan-manifest.json`, and `report.md`.
-- **Limitations:** the audit is agentic, not a reproducible scanner run.
-  Attachment does not execute repository code and is not a sandbox. Completing
-  a hunt is not comprehensive coverage. The skill does not scan production or
-  external targets and does not auto-remediate.
+  on `PATH`. If the skill or the agent capability is missing, say the audit was
+  not executed. Do not attach invented findings.
+- **Output:** upstream artifacts under `~/security-audit-skill/<repo>/run-<N>`,
+  then an updated scan report. `attach` writes `source-audit-records.json` and
+  refreshes `findings.json`, `scan-manifest.json`, and `report.md`.
+- **Limitations:** copying or installing the skill is not an executed audit.
+  Attachment does not execute repository code and is not a sandbox. Target code
+  runs only when the upstream OS sandbox is enforced; otherwise those candidates
+  stay `needs_validation`. Completing a hunt is not comprehensive coverage. The
+  skill does not scan production or external targets and does not auto-remediate.
 
 Verdicts on each audit record:
 
@@ -344,11 +372,13 @@ revision cannot be read.
 
 `audit attach` also writes `source-audit-records.json` in that directory: the
 audit records as submitted, including rejected ones. It rewrites
-`findings.json`, `scan-manifest.json`, and `report.md`.
+`findings.json`, `scan-manifest.json`, and `report.md`. Repeating it with the
+same findings file does not duplicate records. The hunt's own artifacts stay
+outside this directory.
 
 | File | Role |
 | --- | --- |
-| `report.md` | Human-readable summary: status, counts, findings, skipped checks, and limitations |
+| `report.md` | Human-readable summary: Trivy, Semgrep, Dart, and Cloudflare execution, findings, skipped checks, and limitations |
 | `findings.json` | Normalized findings. Schema: [schemas/finding.schema.json](schemas/finding.schema.json) |
 | `scan-manifest.json` | Scan identity, tool runs, execution, coverage, and report paths. Schema: [schemas/manifest.schema.json](schemas/manifest.schema.json) |
 | `profile.json` | Repository profile used to build the plan |
@@ -385,11 +415,19 @@ Manifest schema version 2 keeps the version 1 `coverageGaps` field and adds
   baseline boundary. `coverage.comprehensive` is always `false` in standard
   mode.
 
+`report.md` always has a Cloudflare row. `not executed` means no validated audit
+was attached. `attached` means the CLI imported a findings file. It does not
+mean the CLI watched the six phases. The agent reports phase completion only
+for phases it finished. If the deterministic scan succeeds and Cloudflare does
+not, the CLI status stays complete or complete with findings and the combined
+audit is incomplete. That does not change the CLI exit code.
+
 Canonical findings keep per-tool severity, confidence, location, and sanitized
-evidence on each source record. Exact cross-tool duplicates may be
-consolidated. Related sink-level findings share `relatedGroupId` and stay
-separate. Dependency findings confirm package presence and set reachability to
-`not_analyzed`. Advisory text from the scanner is not treated as an independent
+evidence on each source record. Exact duplicates from the same provenance may
+be consolidated. A source-audit finding is not merged into a deterministic
+finding because the title or path looks similar. Related sink-level findings
+share `relatedGroupId` and stay separate. Dependency findings confirm package
+presence and set reachability to `not_analyzed`. Advisory text from the scanner is not treated as an independent
 check against the publisher (`publisherVerification` is `not_performed`).
 
 ## Isolation and credential handling
@@ -439,7 +477,8 @@ as a pass.
 Failed, skipped, and unsupported checks are recorded separately and are never
 treated as passing. An empty `coverageGaps` or `coverage.unsupported` array is
 not evidence of comprehensive coverage. `coverage.comprehensive` is always
-`false` in standard mode.
+`false` in standard mode. A finished Cloudflare audit does not change that.
+Out-of-scope checks, including DAST, remain out of scope.
 
 Pinned Trivy `0.67.2` flagged `USER root` as `DS002` and a synthetic `ghp_`
 canary as `github-pat` in the project's detection tests. The same probe did not

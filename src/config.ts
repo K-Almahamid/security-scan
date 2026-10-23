@@ -1,6 +1,7 @@
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { z } from "zod";
+import { UsageError, isEnoent } from "./errors.js";
 
 const toolToggleSchema = z.object({ enabled: z.union([z.boolean(), z.literal("auto")]).default("auto") });
 
@@ -40,7 +41,13 @@ export const configSchema = z
     policy: z
       .object({
         failOn: z.enum(["critical", "high", "medium", "low", "info"]).default("high"),
-        allowFailedTools: z.boolean().default(false),
+        allowFailedTools: z
+          .boolean()
+          .default(false)
+          .refine((value) => value === false, {
+            message:
+              "allowFailedTools cannot be true; an incomplete scan must not be treated as successful",
+          }),
       })
       .default({ failOn: "high", allowFailedTools: false }),
   })
@@ -61,15 +68,9 @@ export async function loadConfig(
     assertNoCredentialKeys(parsed);
     return configSchema.parse(parsed);
   } catch (error) {
-    if (
-      !explicitPath &&
-      error instanceof Error &&
-      "code" in error &&
-      error.code === "ENOENT"
-    ) {
-      return defaultConfig;
-    }
-    throw error;
+    if (!explicitPath && isEnoent(error)) return defaultConfig;
+    if (error instanceof UsageError) throw error;
+    throw new UsageError(error instanceof Error ? error.message : String(error));
   }
 }
 
@@ -77,7 +78,7 @@ function assertNoCredentialKeys(value: unknown, trail = "config"): void {
   if (!value || typeof value !== "object") return;
   for (const [key, nested] of Object.entries(value)) {
     if (/(password|secret|token|api.?key|credential|authorization)/i.test(key)) {
-      throw new Error(`Credential-bearing config key is forbidden: ${trail}.${key}`);
+      throw new UsageError(`Credential-bearing config key is forbidden: ${trail}.${key}`);
     }
     assertNoCredentialKeys(nested, `${trail}.${key}`);
   }
@@ -87,7 +88,7 @@ export function resolveReportsDirectory(repoPath: string, configured: string): s
   const resolved = path.resolve(repoPath, configured);
   const relative = path.relative(repoPath, resolved);
   if (relative.startsWith("..") || path.isAbsolute(relative)) {
-    throw new Error("reportsDir must remain inside the target repository");
+    throw new UsageError("reportsDir must remain inside the target repository");
   }
   return resolved;
 }

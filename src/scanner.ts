@@ -10,13 +10,19 @@ import {
   type SecurityScanConfig,
 } from "./config.js";
 import { allowedHostEnvironment, runCommand } from "./execution.js";
+import { UsageError } from "./errors.js";
 import {
   deduplicateFindings,
   redactSensitiveText,
   severityAtOrAbove,
 } from "./findings.js";
 import { buildScanPlan } from "./planner.js";
-import { assertRepositoryPath, profileRepository } from "./profile.js";
+import {
+  assertNoEscapingSymlinks,
+  assertPathInsideRepository,
+  assertRepositoryPath,
+  profileRepository,
+} from "./profile.js";
 import {
   coverageSummary,
   determineOverallStatus,
@@ -28,7 +34,9 @@ import type {
   AdapterContext,
   AdapterResult,
   CanonicalFinding,
+  OverallStatus,
   ScanManifest,
+  Severity,
   ToolPlan,
   ToolRun,
 } from "./types.js";
@@ -56,12 +64,19 @@ export async function runSecurityScan(options: ScanOptions): Promise<ScanOutcome
   const loaded = await loadConfig(repoPath, options.configPath);
   const config = applyOverrides(loaded, options);
   const profile = await profileRepository(repoPath, config, startedAt);
+  await assertNoEscapingSymlinks(repoPath);
   const plan = buildScanPlan(profile, config);
+  if (plan.tools.length === 0) {
+    throw new UsageError(
+      "No scanner was planned. Refusing to report a successful scan without an executed check.",
+    );
+  }
   const scanId = await createScanId(repoPath, startedAt);
   const reportRoot = resolveReportsDirectory(
     repoPath,
     options.reportsDir ?? config.reportsDir,
   );
+  await assertPathInsideRepository(repoPath, reportRoot);
   const reportDirectory = path.join(reportRoot, scanId);
   const repoHash = createHash("sha256").update(repoPath).digest("hex").slice(0, 16);
   const rawDirectory = path.join(
@@ -104,6 +119,7 @@ export async function runSecurityScan(options: ScanOptions): Promise<ScanOutcome
         }
         return await adapter.execute(toolPlan, context);
       } catch (error) {
+        if (error instanceof UsageError) throw error;
         return unavailableResult(
           toolPlan,
           redactSensitiveText(error instanceof Error ? error.message : String(error)),
@@ -140,13 +156,18 @@ export async function runSecurityScan(options: ScanOptions): Promise<ScanOutcome
   }
 
   const threshold = options.failOn ?? config.policy.failOn;
-  const exitCode =
-    manifest.overallStatus === "incomplete"
-      ? 2
-      : findings.some((finding) => severityAtOrAbove(finding.severity, threshold))
-        ? 1
-        : 0;
+  const exitCode = scanExitCode(manifest.overallStatus, findings, threshold);
   return { manifest, findings, exitCode };
+}
+
+export function scanExitCode(
+  status: OverallStatus,
+  findings: CanonicalFinding[],
+  threshold: Exclude<Severity, "unknown">,
+): number {
+  if (status === "configuration_error") return 3;
+  if (status === "incomplete") return 2;
+  return findings.some((finding) => severityAtOrAbove(finding.severity, threshold)) ? 1 : 0;
 }
 
 function applyOverrides(

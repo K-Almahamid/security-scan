@@ -32,7 +32,7 @@
       "additionalProperties": false,
       "properties": {
         "failOn": { "enum": ["critical", "high", "medium", "low", "info"] },
-        "allowFailedTools": { "type": "boolean" }
+        "allowFailedTools": { "const": false }
       }
     }
   },

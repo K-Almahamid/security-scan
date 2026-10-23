@@ -129,6 +129,21 @@ export function redactSensitiveText(input: string, maxLength = 2_000): string {
   return output.length > maxLength ? `${output.slice(0, maxLength)}…[TRUNCATED]` : output;
 }
 
+export function repositoryRelativePath(repoPath: string, candidate: string): string | null {
+  const relative = normalizePath(repoPath, candidate);
+  if (
+    !relative ||
+    relative === "." ||
+    relative.startsWith("../") ||
+    relative.split("/").includes("..") ||
+    path.isAbsolute(relative) ||
+    path.posix.isAbsolute(relative)
+  ) {
+    return null;
+  }
+  return relative;
+}
+
 export function normalizePath(repoPath: string, candidate: string): string {
   const normalizedCandidate = candidate.replace(/^\/src\/?/, "");
   const absolute = path.isAbsolute(normalizedCandidate)

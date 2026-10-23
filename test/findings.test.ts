@@ -3,6 +3,7 @@ import { describe, it } from "node:test";
 import {
   createFinding,
   deduplicateFindings,
+  normalizeSeverity,
   redactSensitiveText,
 } from "../src/findings.js";
 
@@ -15,6 +16,8 @@ describe("finding normalization and deduplication", () => {
     assert.ok(!output.includes("abc.def.ghi"));
     assert.ok(!output.includes("sk-abcdefghijklmnop"));
     assert.match(output, /REDACTED/);
+    assert.equal(normalizeSeverity("fatal"), "unknown");
+    assert.equal(normalizeSeverity("note"), "info");
   });
 
   it("merges evidence-equivalent findings and preserves sources", () => {
@@ -160,5 +163,27 @@ describe("finding normalization and deduplication", () => {
       ]).length,
       2,
     );
+  });
+
+  it("keeps a stable fingerprint for equivalent inputs and preserves unknown severity", () => {
+    const input = {
+      title: "Missing excerpt",
+      severity: "unknown" as const,
+      category: "sast" as const,
+      component: null,
+      location: {},
+      evidence: "",
+      source: { tool: "semgrep", ruleId: "rule.without.location" },
+      scannedAt: "2026-01-01T00:00:00.000Z",
+    };
+    const first = createFinding(input);
+    const second = createFinding({
+      ...input,
+      source: { tool: "semgrep", ruleId: "rule.other" },
+    });
+    assert.equal(first.fingerprint, createFinding(input).fingerprint);
+    assert.equal(first.severity, "unknown");
+    assert.equal(deduplicateFindings([first, second]).length, 2);
+    assert.equal(first.dependency, undefined);
   });
 });

@@ -1,0 +1,8 @@
+{
+  "mode": "standard",
+  "tools": [],
+  "supportedChecks": ["Repository secret detection"],
+  "outOfScope": ["Dynamic application security testing (DAST) and arbitrary remote target scanning"],
+  "unsupported": [],
+  "coverageGaps": []
+}
