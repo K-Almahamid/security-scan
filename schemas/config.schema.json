@@ -1,0 +1,49 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://security-scan.local/schemas/config.schema.json",
+  "title": "Security Scan configuration",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "$schema": { "type": "string" },
+    "version": { "const": 1 },
+    "reportsDir": { "type": "string" },
+    "components": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["path"],
+        "properties": { "path": { "type": "string", "minLength": 1 } }
+      }
+    },
+    "exclude": { "type": "array", "items": { "type": "string" } },
+    "tools": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "trivy": { "$ref": "#/$defs/tool" },
+        "semgrep": { "$ref": "#/$defs/tool" },
+        "dartAnalyze": { "$ref": "#/$defs/tool" }
+      }
+    },
+    "policy": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "failOn": { "enum": ["critical", "high", "medium", "low", "info"] },
+        "allowFailedTools": { "type": "boolean" }
+      }
+    }
+  },
+  "$defs": {
+    "tool": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": { "oneOf": [{ "type": "boolean" }, { "const": "auto" }] },
+        "offline": { "type": "boolean" }
+      }
+    }
+  }
+}

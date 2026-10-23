@@ -1,0 +1,57 @@
+name: security-scan
+
+services:
+  trivy:
+    image: aquasec/trivy:0.67.2@sha256:e2b22eac59c02003d8749f5b8d9bd073b62e30fefaef5b7c8371204e0a4b0c08
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    user: "${SECURITY_SCAN_UID:-1000}:${SECURITY_SCAN_GID:-1000}"
+    environment:
+      TRIVY_CACHE_DIR: /cache
+    mem_limit: 2g
+    cpus: 2
+    pids_limit: 256
+    tmpfs:
+      - /tmp:size=512m,mode=1777
+    volumes:
+      - type: bind
+        source: ${SECURITY_SCAN_REPO:?repository path required}
+        target: /src
+        read_only: true
+      - type: bind
+        source: ${SECURITY_SCAN_OUTPUT:?output path required}
+        target: /out
+      - type: bind
+        source: ${SECURITY_SCAN_CACHE:?cache path required}/trivy
+        target: /cache
+    working_dir: /src
+
+  semgrep:
+    image: semgrep/semgrep:1.143.1@sha256:73116c3be6ee3a138acad62b2d26c17fad7f62610c0c9a9d66c61b0c0a5405ef
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    user: "${SECURITY_SCAN_UID:-1000}:${SECURITY_SCAN_GID:-1000}"
+    environment:
+      HOME: /tmp/home
+      XDG_CACHE_HOME: /tmp/cache
+      SEMGREP_SETTINGS_FILE: /tmp/semgrep-settings.yml
+    mem_limit: 3g
+    cpus: 2
+    pids_limit: 256
+    tmpfs:
+      - /tmp:size=512m,mode=1777
+    volumes:
+      - type: bind
+        source: ${SECURITY_SCAN_REPO:?repository path required}
+        target: /src
+        read_only: true
+      - type: bind
+        source: ${SECURITY_SCAN_OUTPUT:?output path required}
+        target: /out
+      - type: bind
+        source: ${SECURITY_SCAN_RULES:?rules path required}
+        target: /rules
+        read_only: true
+    working_dir: /src

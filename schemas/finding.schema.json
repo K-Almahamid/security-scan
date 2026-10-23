@@ -1,0 +1,94 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://security-scan.local/schemas/finding.schema.json",
+  "title": "Security Scan finding list",
+  "type": "array",
+  "items": {
+    "type": "object",
+    "required": [
+      "id",
+      "fingerprint",
+      "title",
+      "severity",
+      "confidence",
+      "category",
+      "location",
+      "evidence",
+      "sources",
+      "verification",
+      "dedupe",
+      "scannedAt"
+    ],
+    "properties": {
+      "id": { "type": "string" },
+      "fingerprint": { "type": "string" },
+      "title": { "type": "string" },
+      "description": { "type": "string" },
+      "severity": { "enum": ["critical", "high", "medium", "low", "info", "unknown"] },
+      "confidence": { "enum": ["high", "medium", "low"] },
+      "category": { "enum": ["sast", "sca", "secret", "misconfiguration", "quality"] },
+      "component": { "type": ["string", "null"] },
+      "location": { "$ref": "#/$defs/location" },
+      "evidence": { "$ref": "#/$defs/evidence" },
+      "sources": {
+        "type": "array",
+        "minItems": 1,
+        "items": {
+          "type": "object",
+          "required": ["tool", "ruleId"],
+          "properties": {
+            "tool": { "type": "string" },
+            "ruleId": { "type": "string" },
+            "rawId": { "type": "string" },
+            "severity": { "enum": ["critical", "high", "medium", "low", "info", "unknown"] },
+            "confidence": { "enum": ["high", "medium", "low"] },
+            "category": { "enum": ["sast", "sca", "secret", "misconfiguration", "quality"] },
+            "location": { "$ref": "#/$defs/location" },
+            "evidence": { "$ref": "#/$defs/evidence" }
+          }
+        }
+      },
+      "dependency": {
+        "type": "object",
+        "required": ["presence", "reachability", "advisorySource", "advisoryCheckedAt", "publisherVerification"],
+        "properties": {
+          "presence": { "const": "confirmed" },
+          "reachability": { "const": "not_analyzed" },
+          "advisorySource": { "type": "string" },
+          "advisoryCheckedAt": { "type": "string", "format": "date-time" },
+          "publisherVerification": { "const": "not_performed" }
+        }
+      },
+      "verification": {
+        "enum": ["confirmed", "potential", "not_verified", "needs_validation", "rejected"]
+      },
+      "provenance": { "enum": ["deterministic", "source-audit"] },
+      "auditVerdict": { "enum": ["confirmed", "needs_validation", "rejected"] },
+      "dedupe": { "type": "object" },
+      "scannedAt": { "type": "string", "format": "date-time" }
+    }
+  },
+  "$defs": {
+    "location": {
+      "type": "object",
+      "properties": {
+        "path": { "type": "string" },
+        "startLine": { "type": "integer", "minimum": 1 },
+        "endLine": { "type": "integer", "minimum": 1 },
+        "endpoint": { "type": "string" },
+        "package": { "type": "string" },
+        "installedVersion": { "type": "string" }
+      }
+    },
+    "evidence": {
+      "type": "object",
+      "required": ["redacted", "ruleId", "kind"],
+      "properties": {
+        "redacted": { "type": "string" },
+        "ruleId": { "type": "string" },
+        "kind": { "enum": ["code", "metadata", "redacted", "unavailable"] },
+        "limitation": { "type": "string" }
+      }
+    }
+  }
+}

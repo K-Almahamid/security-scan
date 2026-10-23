@@ -1,0 +1,88 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://security-scan.local/schemas/manifest.schema.json",
+  "title": "Security Scan manifest",
+  "type": "object",
+  "required": [
+    "schemaVersion",
+    "scanId",
+    "repositoryPath",
+    "overallStatus",
+    "toolRuns",
+    "coverageGaps",
+    "counts",
+    "reportDirectory"
+  ],
+  "properties": {
+    "schemaVersion": { "enum": [1, 2] },
+    "scanId": { "type": "string" },
+    "repositoryPath": { "type": "string" },
+    "overallStatus": {
+      "enum": ["complete", "complete_with_findings", "incomplete", "configuration_error"]
+    },
+    "toolRuns": { "type": "array" },
+    "execution": {
+      "type": "object",
+      "required": ["status", "planned", "completed", "failed", "skipped", "unsupported"],
+      "properties": {
+        "status": { "enum": ["complete", "incomplete"] },
+        "planned": { "type": "integer", "minimum": 0 },
+        "completed": { "type": "integer", "minimum": 0 },
+        "failed": { "type": "integer", "minimum": 0 },
+        "skipped": { "type": "integer", "minimum": 0 },
+        "unsupported": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "coverage": {
+      "type": "object",
+      "required": [
+        "comprehensive",
+        "plannedStatus",
+        "plannedChecks",
+        "supportedChecks",
+        "outOfScope",
+        "unsupported"
+      ],
+      "properties": {
+        "comprehensive": { "const": false },
+        "plannedStatus": { "enum": ["complete", "partial"] },
+        "plannedChecks": { "type": "array", "items": { "type": "string" } },
+        "supportedChecks": { "type": "array", "items": { "type": "string" } },
+        "outOfScope": { "type": "array", "items": { "type": "string" } },
+        "unsupported": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "coverageGaps": { "type": "array", "items": { "type": "string" } },
+    "counts": { "type": "object" },
+    "reportDirectory": { "type": "string" },
+    "sourceAudit": {
+      "type": "object",
+      "properties": {
+        "status": { "enum": ["attached", "validation_failed"] },
+        "methodology": { "const": "cloudflare-security-audit-skill" },
+        "upstreamCommit": { "type": "string" },
+        "sourceFindingsPath": { "type": "string" },
+        "validatedAt": { "type": "string", "format": "date-time" },
+        "orchestration": { "const": "cursor-agent" },
+        "counts": {
+          "type": "object",
+          "properties": {
+            "confirmed": { "type": "integer", "minimum": 0 },
+            "needs_validation": { "type": "integer", "minimum": 0 },
+            "rejected": { "type": "integer", "minimum": 0 }
+          }
+        },
+        "note": { "type": "string" }
+      }
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": { "schemaVersion": { "const": 2 } },
+        "required": ["schemaVersion"]
+      },
+      "then": { "required": ["execution", "coverage"] }
+    }
+  ]
+}

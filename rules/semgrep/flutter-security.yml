@@ -1,0 +1,50 @@
+rules:
+  - id: security-scan.flutter.accept-all-certificates
+    message: A badCertificateCallback that returns true disables TLS certificate validation.
+    severity: ERROR
+    languages: [dart]
+    metadata:
+      cwe: ["CWE-295"]
+      confidence: HIGH
+      impact: Attackers may intercept or modify TLS traffic.
+    patterns:
+      - pattern: $CLIENT.badCertificateCallback = ($CERT, $HOST, $PORT) => true
+
+  - id: security-scan.flutter.global-http-override
+    message: A global HttpOverrides replacement can weaken certificate or proxy handling across the app.
+    severity: WARNING
+    languages: [dart]
+    metadata:
+      cwe: ["CWE-295"]
+      confidence: MEDIUM
+    pattern: HttpOverrides.global = $OVERRIDE
+
+  - id: security-scan.flutter.sensitive-shared-preferences
+    message: A credential-like value is stored in SharedPreferences, which is not secure credential storage.
+    severity: WARNING
+    languages: [dart]
+    metadata:
+      cwe: ["CWE-922"]
+      confidence: MEDIUM
+    patterns:
+      - pattern-either:
+          - pattern: $PREFS.setString($KEY, $VALUE)
+          - pattern: $PREFS.setStringList($KEY, $VALUE)
+      - metavariable-regex:
+          metavariable: $KEY
+          regex: (?i).*('|"|`)(token|secret|password|credential|private.?key).*
+
+  - id: security-scan.flutter.sensitive-debug-output
+    message: Credential-like data may be exposed through debug output.
+    severity: WARNING
+    languages: [dart]
+    metadata:
+      cwe: ["CWE-532"]
+      confidence: LOW
+    patterns:
+      - pattern-either:
+          - pattern: print($VALUE)
+          - pattern: debugPrint($VALUE)
+      - metavariable-regex:
+          metavariable: $VALUE
+          regex: (?i).*(token|secret|password|credential).*

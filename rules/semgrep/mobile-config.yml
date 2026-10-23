@@ -1,0 +1,25 @@
+rules:
+  - id: security-scan.android.cleartext-traffic
+    message: Android cleartext traffic is enabled.
+    severity: ERROR
+    languages: [generic]
+    metadata:
+      cwe: ["CWE-319"]
+      confidence: HIGH
+    paths:
+      include:
+        - "**/AndroidManifest.xml"
+        - "**/network_security_config.xml"
+    pattern-regex: '(usesCleartextTraffic|cleartextTrafficPermitted)\s*=\s*"true"'
+
+  - id: security-scan.ios.arbitrary-loads
+    message: iOS App Transport Security allows arbitrary network loads.
+    severity: ERROR
+    languages: [generic]
+    metadata:
+      cwe: ["CWE-319"]
+      confidence: HIGH
+    paths:
+      include:
+        - "**/Info.plist"
+    pattern-regex: '(?s)<key>NSAllowsArbitraryLoads</key>\s*<true\s*/>'
