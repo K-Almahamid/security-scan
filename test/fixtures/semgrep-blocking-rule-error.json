@@ -1,0 +1,11 @@
+{
+  "version": "1.0.0",
+  "results": [],
+  "errors": [
+    {
+      "level": "error",
+      "type": "Rule parse error",
+      "message": "invalid pattern in custom rule bundle"
+    }
+  ]
+}

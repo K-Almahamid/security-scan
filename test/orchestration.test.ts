@@ -79,7 +79,21 @@ describe("orchestration failure and scope contracts", () => {
     });
     assert.equal(falseSuccess.status, "failed");
     assert.equal(readTrivyDocument({ Results: [] }).valid, true);
-    assert.equal(readSemgrepDocument({ results: [], errors: [{ message: "bad rule" }] }).valid, false);
+    const blocking = readSemgrepDocument({ results: [], errors: [{ message: "bad rule" }] });
+    assert.equal(blocking.valid, false);
+    assert.match(blocking.error ?? "", /blocking/i);
+    const partial = readSemgrepDocument({
+      results: [{ check_id: "x", path: "a.py", extra: { message: "m", severity: "LOW" } }],
+      errors: [
+        {
+          level: "warn",
+          type: ["PartialParsing", []],
+          message: "Syntax error at line a.py:1",
+        },
+      ],
+    });
+    assert.equal(partial.valid, true);
+    assert.equal(partial.incompleteScan, true);
 
     const timedOut = finalizeToolExecution({
       family: "trivy",
@@ -108,6 +122,17 @@ describe("orchestration failure and scope contracts", () => {
       findings: [],
     });
     assert.equal(dartCrash.status, "failed");
+
+    const truncated = finalizeToolExecution({
+      family: "dart-analyze",
+      exitCode: 0,
+      timedOut: false,
+      outputTruncated: true,
+      documentValid: true,
+      findings: [finding],
+    });
+    assert.equal(truncated.status, "failed");
+    assert.match(truncated.reason ?? "", /truncated/i);
   });
 
   it("maps scan status to the exit-code contract", () => {
@@ -202,7 +227,7 @@ describe("orchestration failure and scope contracts", () => {
     assert.equal(badJobs.status, 3);
     const version = runCli(["version"]);
     assert.equal(version.status, 0);
-    assert.match(version.stdout, /0\.3\.2/);
+    assert.match(version.stdout, /0\.4\.0/);
     const fileTarget = runCli(["profile", "--repo", path.join(projectRoot, "package.json")]);
     assert.equal(fileTarget.status, 3);
   });

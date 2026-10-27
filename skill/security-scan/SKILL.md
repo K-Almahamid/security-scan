@@ -12,74 +12,112 @@ A normal full security audit has three layers:
 2. **Semgrep CE** — static source analysis, plus `dart analyze` when a resolved Dart workspace already exists.
 3. **Cloudflare source audit** — the upstream `security-audit` skill. This is a multi-phase agent workflow. The CLI does not execute it.
 
-`src/workflow.ts` is the status contract. `planSecurityWorkflow("full")` includes `standard-scan`, `cloudflare-source-audit`, and `validate-and-attach`. `planSecurityWorkflow("deterministic-only")` includes only the standard scan.
+`src/workflow.ts` is the status contract. `planSecurityWorkflow("full")` includes `standard-scan`, `cloudflare-source-audit`, and `validate-and-attach`. The CLI records execution in `workflow-run.json` and reports combined status through `security-scan workflow assess`.
 
-## Default workflow (full audit)
+Cursor does not automatically invoke other Skills or MCP servers. You must read the upstream `security-audit` skill and follow it in this session when a full audit is requested.
 
-1. Resolve the target to an absolute repository path. Never assume the CLI installation directory is the target.
-2. Confirm `security-scan` is on `PATH`. If it is missing, stop and report that the local engine is not installed.
-3. Run the deterministic scan:
+## `/security-scan` workflow
+
+1. **Resolve the target repository** from the current Cursor workspace root (absolute path). Never assume the Security Scan installation directory is the target. If the workspace is ambiguous, ask which repository to scan.
+2. **Preflight:**
 
    ```bash
-   security-scan scan --repo "<absolute-repository-path>" --mode standard
+   security-scan doctor --repo "<absolute-repository-path>" --workflow full
    ```
 
-   Add only user-requested safe options such as `--offline`, `--fail-on`, or `--reports-dir`. Do not add remote targets or credentials.
-4. Preserve the CLI exit code:
-   - `0`: deterministic scan complete below threshold
-   - `1`: deterministic scan complete with findings at or above threshold
-   - `2`: a required scanner failed
-   - `3`: configuration or scope error
-   - `4`: orchestrator error
-   Exit `1` is not a scanner failure. A missing Cloudflare skill is not exit `2`.
-5. Read `scan-manifest.json`, `findings.json`, and `report.md`. Record the report directory.
-6. Run the Cloudflare source audit. This step is required for a full audit.
-   - Look for the upstream skill at `~/.cursor/skills/security-audit/SKILL.md` or `~/.agents/skills/security-audit/SKILL.md`.
-   - If that skill is missing, or this session cannot follow its full audit mode, stop the Cloudflare layer. Report the deterministic CLI status as it is. Report the combined audit as **incomplete**. Say the Cloudflare workflow was **not executed** and why. Do not invent `findings.json` and do not attach an empty file.
-   - If it is present, read that skill and follow **full audit mode** in order: reconnaissance, coverage-led hunting, candidate validation, structured findings, independent verification, and reporting. Do not invoke the `security-scan` skill again. Do not start a second audit.
-   - Write audit artifacts outside the target repository. The upstream default is `~/security-audit-skill/<repo>/run-<N>`.
-   - Do not execute target-controlled code unless that skill's OS sandbox is actually enforced: no external network, allowlisted environment, read-only target and toolchain, scratch-only writes, and resource limits. If it is not enforced, do not run that code. Leave those candidates `needs_validation` and record the blocker.
-   - Do not modify the target application.
-   - After all six phases have actually finished and `findings.json` exists, validate and attach:
+   For deterministic-only requests, use `--workflow deterministic-only`. If doctor exits `2`, stop and report missing required prerequisites. Exit `1` means optional full-audit integrations are missing; continue only when the user still wants a full audit and accepts the gap.
+3. **Choose the workflow mode.** Default to **full audit** unless the user explicitly asked for deterministic-only, standard scan only, or no Cloudflare source audit.
+4. **Run the deterministic scan:**
 
-     ```bash
-     security-scan audit validate --repo "<absolute-repository-path>" --findings "<path>"
-     security-scan audit attach --repo "<absolute-repository-path>" --scan-dir "<report-dir>" --findings "<path>"
-     ```
+   ```bash
+   security-scan scan --repo "<absolute-repository-path>" --mode standard --workflow <full|deterministic-only>
+   ```
 
-   - If validation or attach fails, keep the deterministic scan result and mark the combined audit **incomplete**. A failed Cloudflare audit is not a success.
+   Add only user-requested safe options (`--offline`, `--fail-on`, `--reports-dir`). Record the `workflowRun` path from the CLI JSON summary.
+5. **Read** `scan-manifest.json`, `findings.json`, `workflow-run.json`, and `report.md` from the report directory.
+6. **Cloudflare source audit (full audit only).** Required for a full audit; skip for deterministic-only.
+   - Confirm the upstream skill exists at `~/.cursor/skills/security-audit/SKILL.md` or `~/.agents/skills/security-audit/SKILL.md`.
+   - If it is missing or this session cannot follow full audit mode, do not invent findings. Say the Cloudflare workflow was **not executed** and why. The combined audit is **incomplete**.
+   - If present, read that skill and follow **full audit mode** through all six phases. Do not invoke the `security-scan` skill again.
+   - Write hunt artifacts outside the target (upstream default: `~/security-audit-skill/<repo>/run-<N>`).
+   - Do not execute target-controlled code unless the upstream OS sandbox is actually enforced.
+7. **Register what actually happened** (agent-driven; the CLI does not observe phases):
 
-7. Summarize with `assessSecurityWorkflow` semantics:
-   - Cloudflare **executed** only when the upstream workflow was invoked, all six phases finished, validation passed, and attach succeeded.
-   - Phase completion may be listed only for phases that finished.
-   - If Trivy and Semgrep succeed but Cloudflare was not executed or failed, the deterministic scan is complete (or complete with findings) and the combined audit is **incomplete**.
-   - Coverage is never comprehensive.
+   ```bash
+   security-scan workflow register-cloudflare --repo "<absolute-repository-path>" --scan-dir "<report-dir>" \
+     --status completed|failed|skipped --invoked true|false \
+     --skill-installed true|false --delegation-available true|false --sandbox-available true|false \
+     --phases "<comma-separated-phase-ids>" \
+     [--findings "<path-to-findings.json>"] [--failure-reason "<text>"]
+   ```
+
+   Use only phase ids you actually finished. Do not mark `completed` unless all six phases finished and `findings.json` exists.
+8. **Validate and attach** when findings exist:
+
+   ```bash
+   security-scan audit validate --repo "<absolute-repository-path>" --findings "<path>"
+   security-scan audit attach --repo "<absolute-repository-path>" --scan-dir "<report-dir>" --findings "<path>"
+   ```
+
+   Failed validation or attach leaves the combined audit **incomplete** while preserving the deterministic scan.
+9. **Assess the combined workflow:**
+
+   ```bash
+   security-scan workflow assess --repo "<absolute-repository-path>" --scan-dir "<report-dir>" [--workflow full|deterministic-only] --json
+   ```
+
+   Omit `--workflow` to use the request recorded in `workflow-run.json`. Do not pass `--workflow deterministic-only` for reports created with `--workflow full`; the CLI rejects that downgrade.
+
+10. **Respond** using the assess output. Lead with combined status, then deterministic CLI status and exit codes separately. Never claim the Cloudflare workflow ran unless registration, validation, and attach succeeded.
+
+## Exit codes
+
+**Deterministic scan (`scan`):** unchanged — `0` clean below threshold, `1` findings at/above threshold, `2` incomplete, `3` scope/config, `4` internal error.
+
+**Doctor:** `0` ready, `1` full-audit optional gaps, `2` deterministic prerequisites missing.
+
+**Workflow assess:** `0` combined complete (or complete with findings below treating incomplete as 2), `1` deterministic findings at threshold with otherwise complete combined workflow, `2` incomplete combined workflow or deterministic incomplete, `3` scope error.
+
+A successful deterministic scan does **not** mean a full audit succeeded.
 
 ## Deterministic-only
 
-Use this only when the user explicitly asks for a deterministic-only scan, a standard scan only, or a scan without the Cloudflare source audit.
+When the user explicitly requests deterministic-only:
 
-- Run steps 1–5 only.
+- Use `doctor --workflow deterministic-only`, `scan --workflow deterministic-only`, and `workflow assess --workflow deterministic-only`.
 - Do not read or invoke `security-audit`.
-- Say Cloudflare was **not requested**.
-- Report the CLI status and exit code. Do not call that result a full three-layer audit.
+- State Cloudflare was **not requested** for the scan plan.
+
+### Attaching a hunt after a deterministic-only scan
+
+A separate Cloudflare hunt is still allowed when the user wants it: run the upstream `security-audit` skill, then `audit validate` and `audit attach` on the existing report directory. That is **report attachment**, not proof the full workflow ran inside the CLI.
+
+After attach, `workflow-run.json` may show `cloudflare.attached: true` and `cloudflare.validation: passed` while `cloudflare.invoked` remains `false` and `request` stays `deterministic-only` unless the scan used `--workflow full`. Do **not** tell the user the full six-phase workflow completed unless you also ran `workflow register-cloudflare` with accurate phase IDs and `workflow assess` (for a `full` report) shows combined completion.
+
+`workflow assess` uses the `request` recorded at scan time. Assessing a deterministic-only report as a full audit requires a scan that was created with `--workflow full`.
+
+## Workflow metadata (agent reference)
+
+| Signal | Meaning |
+|--------|---------|
+| `cloudflare.invoked` | You registered that the hunt was started (`workflow register-cloudflare --invoked true`). |
+| `cloudflare.attached` | Validated findings were merged into the report (`audit attach`). |
+| `cloudflare.validation` | Schema validation outcome for the attached file. |
+| Phase list in registration | Only phases you actually finished; never invent phases. |
+
+Attachment ≠ invocation. Attachment ≠ phase completion. Zero normalized findings does not mean a clean scan when a required tool failed or coverage was partial.
 
 ## Safety requirements
 
 - Never interpret failed, skipped, or unsupported checks as passing.
-- Never describe a finished plan, an empty coverage-gap list, or a finished hunt as comprehensive security coverage.
-- A Semgrep process exit of 1 with a valid results document is a completed finding run, not a failed scanner.
-- Never claim a vulnerable dependency is reachable unless a separate implemented reachability analysis established it.
-- Never run project installs, builds, tests, lifecycle scripts, or application servers as part of the deterministic scan.
-- Never request or pass production credentials.
-- Never run ZAP, Strix, active DAST, or any remote-target scan from this skill.
-- Never modify application code or automatically remediate findings.
-- Do not print raw secret evidence. Use redacted normalized findings.
-- Do not commit reports or raw artifacts unless the user explicitly asks after reviewing their sensitivity.
-- Do not merge a deterministic finding with a source-audit finding because the titles or paths look similar. Attachment keeps both, with their own provenance and verdict.
+- Never describe coverage as comprehensive.
+- Semgrep exit `1` with valid JSON is a completed finding run, not a scanner failure.
+- Never run installs, builds, or application servers as part of the deterministic scan.
+- Never auto-remediate or modify application code.
+- Do not print raw secret evidence.
 
 ## Final response
 
-For a full audit, lead with the combined status and state the deterministic CLI status and exit code separately. Include the report path. List Trivy, Semgrep, and Cloudflare execution separately. List confirmed, needs-validation, and rejected audit records when an audit was attached. State which Cloudflare phases finished, using only phases you actually completed. Always state planned coverage, out-of-scope checks, unsupported combinations, and scanner failures.
+Include report paths, per-layer execution, workflow assess JSON summary, failed/skipped tools, unsupported checks, and Cloudflare phase completion only for phases you actually finished.
 
-Never say the Cloudflare workflow ran unless you completed it and attached validated findings.
+Never say the Cloudflare workflow ran unless you registered it, validated findings, and attached them successfully.

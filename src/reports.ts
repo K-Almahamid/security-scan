@@ -10,6 +10,8 @@ import type {
   Severity,
   ToolRun,
 } from "./types.js";
+import type { WorkflowRunRecord } from "./workflow-run.js";
+import { WORKFLOW_RUN_FILENAME } from "./workflow-run.js";
 
 const severities: Severity[] = ["critical", "high", "medium", "low", "info", "unknown"];
 
@@ -74,13 +76,14 @@ export async function writeReports(input: {
   plan: ScanPlan;
   manifest: ScanManifest;
   findings: CanonicalFinding[];
+  workflowRun?: WorkflowRunRecord;
 }): Promise<void> {
   validateFindings(input.findings);
   const staging = `${input.reportDirectory}.partial`;
   await rm(staging, { recursive: true, force: true });
   await mkdir(staging, { recursive: true, mode: 0o700 });
   try {
-    await Promise.all([
+    const writes = [
       writeJson(path.join(staging, "profile.json"), input.profile),
       writeJson(path.join(staging, "scan-plan.json"), input.plan),
       writeJson(path.join(staging, "scan-manifest.json"), input.manifest),
@@ -90,7 +93,17 @@ export async function writeReports(input: {
         renderMarkdownReport(input.manifest, input.findings),
         { mode: 0o600 },
       ),
-    ]);
+    ];
+    if (input.workflowRun) {
+      writes.push(
+        writeFile(
+          path.join(staging, WORKFLOW_RUN_FILENAME),
+          `${JSON.stringify(input.workflowRun, null, 2)}\n`,
+          { mode: 0o600 },
+        ),
+      );
+    }
+    await Promise.all(writes);
     await rename(staging, input.reportDirectory);
   } catch (error) {
     await rm(staging, { recursive: true, force: true });

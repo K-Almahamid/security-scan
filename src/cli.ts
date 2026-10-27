@@ -4,7 +4,11 @@ import path from "node:path";
 import { loadConfig } from "./config.js";
 import { UsageError } from "./errors.js";
 import { buildScanPlan } from "./planner.js";
-import { assertRepositoryPath, profileRepository } from "./profile.js";
+import {
+  assertPathInsideRepository,
+  assertRepositoryPath,
+  profileRepository,
+} from "./profile.js";
 import { runSecurityScan } from "./scanner.js";
 import { attachSourceAuditToReport } from "./source-audit/attach.js";
 import {
@@ -14,8 +18,17 @@ import {
 import { validateCloudflareFindingsFile } from "./source-audit/validate.js";
 import type { Severity } from "./types.js";
 import { readFile } from "node:fs/promises";
+import { CLI_VERSION, doctorExitCode, renderDoctorSummary, runDoctor } from "./doctor.js";
+import { assessWorkflowFromReport, workflowAssessExitCode } from "./workflow-assess.js";
+import {
+  registerCloudflareAgentOutcome,
+  updateWorkflowRun,
+  WORKFLOW_RUN_FILENAME,
+} from "./workflow-run.js";
+import type { CloudflareAuditPhase, WorkflowRequest } from "./workflow.js";
+import { CLOUDFLARE_AUDIT_PHASES } from "./workflow.js";
 
-const VERSION = "0.3.2";
+const VERSION = CLI_VERSION;
 
 async function main(argv: string[]): Promise<number> {
   const [command, ...args] = argv;
@@ -26,6 +39,100 @@ async function main(argv: string[]): Promise<number> {
   if (command === "version" || command === "--version") {
     console.log(VERSION);
     return 0;
+  }
+  if (command === "doctor") {
+    const options = parseArgs(args);
+    if (!options.repo) throw new CliError("--repo is required", 3);
+    const workflowRequest = parseWorkflowRequest(options.workflow);
+    const report = await runDoctor({
+      repo: options.repo,
+      workflowRequest,
+      ...(options.config ? { configPath: options.config } : {}),
+    });
+    if (options.json) {
+      console.log(JSON.stringify(report, null, 2));
+    } else {
+      console.log(renderDoctorSummary(report));
+    }
+    return doctorExitCode(report);
+  }
+  if (command === "workflow") {
+    const workflowCommand = args[0];
+    const workflowArgs = args.slice(1);
+    if (workflowCommand === "assess") {
+      const options = parseWorkflowAssessArgs(workflowArgs);
+      if (!options.repo) throw new CliError("--repo is required", 3);
+      if (!options.scanDir) throw new CliError("--scan-dir is required", 3);
+      const result = await assessWorkflowFromReport({
+        repo: options.repo,
+        scanDir: options.scanDir,
+        ...(options.workflow ? { request: options.workflow } : {}),
+      });
+      const exitCode = workflowAssessExitCode(
+        result.assessment,
+        result.deterministicExitCode,
+        result.inconsistencies,
+        result.assessment.request,
+      );
+      const payload = {
+        assessment: result.assessment,
+        inconsistencies: result.inconsistencies,
+        summary: result.summary,
+        reportDirectory: result.reportDirectory,
+        workflowRun: result.workflowRun ? WORKFLOW_RUN_FILENAME : null,
+        deterministicExitCode: result.deterministicExitCode,
+        exitCode,
+      };
+      if (options.json) {
+        console.log(JSON.stringify(payload, null, 2));
+      } else {
+        console.log(result.summary);
+        if (result.inconsistencies.length > 0) {
+          console.error(`Inconsistencies:\n- ${result.inconsistencies.join("\n- ")}`);
+        }
+      }
+      return exitCode;
+    }
+    if (workflowCommand === "register-cloudflare") {
+      const options = parseWorkflowRegisterArgs(workflowArgs);
+      if (!options.repo) throw new CliError("--repo is required", 3);
+      if (!options.scanDir) throw new CliError("--scan-dir is required", 3);
+      const repo = await assertRepositoryPath(options.repo);
+      const reportDirectory = await assertPathInsideRepository(
+        repo,
+        path.isAbsolute(options.scanDir) ? options.scanDir : options.scanDir,
+      );
+      if (!options.status) throw new CliError("--status is required", 3);
+      const registration = {
+        skillInstalled: options.skillInstalled ?? false,
+        delegationAvailable: options.delegationAvailable ?? false,
+        sandboxAvailable: options.sandboxAvailable ?? false,
+        invoked: options.invoked ?? false,
+        phasesCompleted: options.phasesCompleted ?? [],
+        findingsPath: options.findingsPath ?? null,
+        status: options.status,
+        ...(options.failureReason ? { failureReason: options.failureReason } : {}),
+      };
+      await updateWorkflowRun(reportDirectory, (current) =>
+        registerCloudflareAgentOutcome(current, registration),
+      );
+      console.log(
+        JSON.stringify(
+          {
+            status: "registered",
+            step: "cloudflare-source-audit",
+            reportDirectory,
+          },
+          null,
+          2,
+        ),
+      );
+      return 0;
+    }
+    throw new CliError(
+      "Unknown workflow command. Use: workflow assess | workflow register-cloudflare",
+      3,
+    );
   }
   if (command === "audit") {
     const auditCommand = args[0];
@@ -128,6 +235,7 @@ async function main(argv: string[]): Promise<number> {
       ...(options.timeout ? { timeoutMs: parseDuration(options.timeout) } : {}),
       ...(options.keepRaw ? { keepRaw: true } : {}),
       ...(options.failOn ? { failOn: options.failOn as Exclude<Severity, "unknown"> } : {}),
+      workflowRequest: parseWorkflowRequest(options.workflow),
     });
     console.log(
       JSON.stringify(
@@ -137,6 +245,7 @@ async function main(argv: string[]): Promise<number> {
           findings: outcome.findings.length,
           report: `${outcome.manifest.reportDirectory}/report.md`,
           manifest: `${outcome.manifest.reportDirectory}/scan-manifest.json`,
+          workflowRun: `${outcome.manifest.reportDirectory}/${WORKFLOW_RUN_FILENAME}`,
         },
         null,
         2,
@@ -151,6 +260,7 @@ interface ParsedArgs {
   repo?: string;
   config?: string;
   mode?: string;
+  workflow?: string;
   reportsDir?: string;
   offline?: boolean;
   jobs?: string;
@@ -170,6 +280,7 @@ function parseArgs(args: string[]): ParsedArgs {
     "--jobs": "jobs",
     "--timeout": "timeout",
     "--fail-on": "failOn",
+    "--workflow": "workflow",
   };
   for (let index = 0; index < args.length; index += 1) {
     const arg = args[index];
@@ -218,18 +329,178 @@ function printHelp(): void {
   console.log(`Security Scan ${VERSION}
 
 Usage:
-  security-scan profile --repo <absolute-path> [--json]
-  security-scan validate-config --repo <absolute-path>
-  security-scan scan --repo <absolute-path> [--mode standard]
-    [--config <path>] [--reports-dir <path>] [--offline]
-    [--jobs <n>] [--timeout <20m>] [--keep-raw]
-    [--fail-on <severity>]
+  security-scan doctor --repo <path> [--workflow full|deterministic-only] [--json]
+  security-scan profile --repo <path> [--json]
+  security-scan validate-config --repo <path>
+  security-scan scan --repo <path> [--mode standard]
+    [--workflow full|deterministic-only] [--config <path>] [--reports-dir <path>]
+    [--offline] [--jobs <n>] [--timeout <20m>] [--keep-raw] [--fail-on <severity>]
+  security-scan workflow assess --repo <path> --scan-dir <report-dir>
+    [--workflow full|deterministic-only] [--json]
+  security-scan workflow register-cloudflare --repo <path> --scan-dir <report-dir>
+    --status completed|failed|skipped [--invoked true|false]
+    [--skill-installed true|false] [--delegation-available true|false]
+    [--sandbox-available true|false] [--phases <comma-separated>]
+    [--findings <path>] [--failure-reason <text>]
   security-scan version
 
 Source-level audit (validation and import only; the Cursor skill runs the Cloudflare hunt):
-  security-scan audit validate --repo <absolute-path> --findings <cloudflare-findings.json>
-  security-scan audit import --repo <absolute-path> --findings <cloudflare-findings.json>
-  security-scan audit attach --repo <absolute-path> --scan-dir <report-dir> --findings <cloudflare-findings.json>`);
+  security-scan audit validate --repo <path> --findings <cloudflare-findings.json>
+  security-scan audit import --repo <path> --findings <cloudflare-findings.json>
+  security-scan audit attach --repo <path> --scan-dir <report-dir> --findings <cloudflare-findings.json>
+
+Exit codes:
+  doctor: 0 ready, 1 full-audit optional gaps, 2 deterministic prerequisites missing
+  workflow assess: 0 combined complete, 1 findings at/above threshold, 2 incomplete, 3 scope error`);
+}
+
+function parseWorkflowRequest(value?: string): WorkflowRequest {
+  if (!value || value === "deterministic-only") return "deterministic-only";
+  if (value === "full") return "full";
+  throw new CliError("--workflow must be full or deterministic-only", 3);
+}
+
+interface ParsedWorkflowAssessArgs {
+  repo?: string;
+  scanDir?: string;
+  workflow?: WorkflowRequest;
+  json?: boolean;
+}
+
+function parseWorkflowAssessArgs(args: string[]): ParsedWorkflowAssessArgs {
+  const parsed: ParsedWorkflowAssessArgs = {};
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index];
+    if (arg === "--json") {
+      parsed.json = true;
+      continue;
+    }
+    if (arg === "--repo") {
+      parsed.repo = readValue(args, index, arg);
+      index += 1;
+      continue;
+    }
+    if (arg === "--scan-dir") {
+      parsed.scanDir = readValue(args, index, arg);
+      index += 1;
+      continue;
+    }
+    if (arg === "--workflow") {
+      parsed.workflow = parseWorkflowRequest(readValue(args, index, arg));
+      index += 1;
+      continue;
+    }
+    throw new CliError(`Unknown workflow assess option: ${String(arg)}`, 3);
+  }
+  if (parsed.scanDir && (parsed.scanDir.includes("..") || parsed.scanDir.startsWith("~"))) {
+    throw new CliError("Unsafe scan directory path", 3);
+  }
+  return parsed;
+}
+
+interface ParsedWorkflowRegisterArgs {
+  repo?: string;
+  scanDir?: string;
+  status?: "completed" | "failed" | "skipped";
+  invoked?: boolean;
+  skillInstalled?: boolean;
+  delegationAvailable?: boolean;
+  sandboxAvailable?: boolean;
+  phasesCompleted?: CloudflareAuditPhase[];
+  findingsPath?: string | null;
+  failureReason?: string | null;
+}
+
+function parseWorkflowRegisterArgs(args: string[]): ParsedWorkflowRegisterArgs {
+  const parsed: ParsedWorkflowRegisterArgs = {};
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index];
+    if (arg === "--repo") {
+      parsed.repo = readValue(args, index, arg);
+      index += 1;
+      continue;
+    }
+    if (arg === "--scan-dir") {
+      parsed.scanDir = readValue(args, index, arg);
+      index += 1;
+      continue;
+    }
+    if (arg === "--status") {
+      const value = readValue(args, index, arg);
+      if (!["completed", "failed", "skipped"].includes(value)) {
+        throw new CliError("--status must be completed, failed, or skipped", 3);
+      }
+      parsed.status = value as "completed" | "failed" | "skipped";
+      index += 1;
+      continue;
+    }
+    if (arg === "--invoked") {
+      parsed.invoked = parseBooleanFlag(readValue(args, index, arg));
+      index += 1;
+      continue;
+    }
+    if (arg === "--skill-installed") {
+      parsed.skillInstalled = parseBooleanFlag(readValue(args, index, arg));
+      index += 1;
+      continue;
+    }
+    if (arg === "--delegation-available") {
+      parsed.delegationAvailable = parseBooleanFlag(readValue(args, index, arg));
+      index += 1;
+      continue;
+    }
+    if (arg === "--sandbox-available") {
+      parsed.sandboxAvailable = parseBooleanFlag(readValue(args, index, arg));
+      index += 1;
+      continue;
+    }
+    if (arg === "--phases") {
+      const phases = readValue(args, index, arg)
+        .split(",")
+        .map((phase) => phase.trim())
+        .filter(Boolean);
+      for (const phase of phases) {
+        if (!CLOUDFLARE_AUDIT_PHASES.includes(phase as CloudflareAuditPhase)) {
+          throw new CliError(`Unknown Cloudflare phase: ${phase}`, 3);
+        }
+      }
+      parsed.phasesCompleted = phases as CloudflareAuditPhase[];
+      index += 1;
+      continue;
+    }
+    if (arg === "--findings") {
+      parsed.findingsPath = readValue(args, index, arg);
+      index += 1;
+      continue;
+    }
+    if (arg === "--failure-reason") {
+      parsed.failureReason = readValue(args, index, arg);
+      index += 1;
+      continue;
+    }
+    throw new CliError(`Unknown workflow register option: ${String(arg)}`, 3);
+  }
+  if (parsed.scanDir && (parsed.scanDir.includes("..") || parsed.scanDir.startsWith("~"))) {
+    throw new CliError("Unsafe scan directory path", 3);
+  }
+  if (parsed.findingsPath && (parsed.findingsPath.includes("..") || parsed.findingsPath.startsWith("~"))) {
+    throw new CliError("Unsafe findings path", 3);
+  }
+  return parsed;
+}
+
+function readValue(args: string[], index: number, flag: string): string {
+  const value = args[index + 1];
+  if (!value || value.startsWith("--")) {
+    throw new CliError(`Missing value for ${flag}`, 3);
+  }
+  return value;
+}
+
+function parseBooleanFlag(value: string): boolean {
+  if (value === "true") return true;
+  if (value === "false") return false;
+  throw new CliError(`Expected true or false, received: ${value}`, 3);
 }
 
 interface ParsedAuditArgs {

@@ -1,6 +1,6 @@
 {
   "name": "@local/security-scan",
-  "version": "0.3.2",
+  "version": "0.4.0",
   "private": true,
   "description": "Local, reusable security scan orchestrator for Cursor",
   "type": "module",

@@ -70,6 +70,9 @@ describe("full security-audit workflow", () => {
       path.join(projectRoot, "skill/security-scan-source-audit/SKILL.md"),
       "utf8",
     );
+    assert.match(skill, /security-scan doctor/);
+    assert.match(skill, /workflow assess/);
+    assert.match(skill, /workflow register-cloudflare/);
     assert.match(skill, /planSecurityWorkflow\("full"\)/);
     assert.match(skill, /cloudflare-source-audit/);
     assert.match(skill, /~\/\.cursor\/skills\/security-audit\/SKILL\.md/);

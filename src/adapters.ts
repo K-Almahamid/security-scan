@@ -2,6 +2,8 @@ import { access, readFile } from "node:fs/promises";
 import path from "node:path";
 import {
   allowedHostEnvironment,
+  DEFAULT_MAX_CAPTURE_BYTES,
+  DART_ANALYZE_MAX_CAPTURE_BYTES,
   persistProcessLog,
   runCommand,
   runComposeTool,
@@ -35,10 +37,19 @@ export function finalizeToolExecution(input: {
   family: ToolPlan["adapter"];
   exitCode: number | null;
   timedOut: boolean;
+  outputTruncated?: boolean;
   documentValid: boolean;
   documentError?: string;
   findings: CanonicalFinding[];
 }): ToolCompletion {
+  if (input.outputTruncated) {
+    return {
+      status: "failed",
+      findings: [],
+      reason: "Scanner output was truncated before it could be processed completely",
+      exitCode: input.exitCode,
+    };
+  }
   if (input.timedOut) {
     return { status: "failed", findings: [], reason: "Timed out", exitCode: input.exitCode };
   }
@@ -87,14 +98,49 @@ export function readTrivyDocument(input: unknown): { valid: boolean; error?: str
   return { valid: true };
 }
 
-export function readSemgrepDocument(input: unknown): { valid: boolean; error?: string } {
+export interface SemgrepDocumentReadResult {
+  valid: boolean;
+  error?: string;
+  incompleteScan?: boolean;
+  scannerErrorSummary?: string;
+}
+
+export function readSemgrepDocument(input: unknown): SemgrepDocumentReadResult {
   if (!isRecord(input) || !Array.isArray(input.results)) {
     return { valid: false, error: "Semgrep JSON is missing a results array" };
   }
-  if (Array.isArray(input.errors) && input.errors.length > 0) {
-    return { valid: false, error: "Semgrep JSON reported rule or parse errors" };
+  const errors = Array.isArray(input.errors) ? input.errors : [];
+  if (errors.length === 0) {
+    return { valid: true };
   }
-  return { valid: true };
+  const blocking = errors.filter((error) => isBlockingSemgrepError(error));
+  const nonBlocking = errors.filter((error) => !isBlockingSemgrepError(error));
+  if (blocking.length > 0) {
+    return {
+      valid: false,
+      error: summarizeSemgrepErrors(blocking, "blocking"),
+    };
+  }
+  return {
+    valid: true,
+    incompleteScan: true,
+    scannerErrorSummary: summarizeSemgrepErrors(nonBlocking, "partial"),
+  };
+}
+
+export function applySemgrepCompletionPolicy(
+  completion: ToolCompletion,
+  assessment: SemgrepDocumentReadResult,
+): ToolCompletion {
+  if (!assessment.incompleteScan || !assessment.scannerErrorSummary) {
+    return completion;
+  }
+  return {
+    status: "failed",
+    findings: completion.findings,
+    reason: assessment.scannerErrorSummary,
+    exitCode: completion.exitCode,
+  };
 }
 
 export function buildTrivyArgs(outputName: string, exclude: string[], offline: boolean): string[] {
@@ -276,6 +322,8 @@ const dartAnalyzeAdapter: ToolAdapter = {
       env: allowedHostEnvironment({
         PUB_ENVIRONMENT: "security-scan",
       }),
+      maxStdoutBytes: DART_ANALYZE_MAX_CAPTURE_BYTES,
+      maxStderrBytes: DEFAULT_MAX_CAPTURE_BYTES,
     });
     const findings = parseDartAnalyze(result.stdout, context.repoPath, plan.componentId);
     const logPath = await persistProcessLog(context.rawDirectory, plan.id, {
@@ -287,6 +335,7 @@ const dartAnalyzeAdapter: ToolAdapter = {
       family: "dart-analyze",
       exitCode: result.exitCode,
       timedOut: result.timedOut,
+      outputTruncated: result.stdoutTruncated || result.stderrTruncated,
       documentValid: true,
       findings,
     });
@@ -329,14 +378,20 @@ async function finishJsonTool(input: {
     ? input.readDocument(document.value)
     : { valid: false, error: document.error };
   const findings = document.ok && parsed.valid ? input.parse(document.value) : [];
-  const completion = finalizeToolExecution({
+  const composeOutputTruncated =
+    input.result.stdoutTruncated || input.result.stderrTruncated;
+  let completion = finalizeToolExecution({
     family: input.family,
     exitCode: input.result.exitCode,
     timedOut: input.result.timedOut,
+    outputTruncated: composeOutputTruncated && !parsed.valid,
     documentValid: parsed.valid,
     ...(parsed.error ? { documentError: parsed.error } : {}),
     findings,
   });
+  if (input.family === "semgrep") {
+    completion = applySemgrepCompletionPolicy(completion, parsed);
+  }
   return finishRun(input.plan, input.result, completion, input.version, logPath);
 }
 
@@ -550,6 +605,51 @@ function normalizeConfidence(value: unknown): "high" | "medium" | "low" {
   if (normalized === "high") return "high";
   if (normalized === "low") return "low";
   return "medium";
+}
+
+function isBlockingSemgrepError(error: unknown): boolean {
+  if (!isRecord(error)) return true;
+  const level = typeof error.level === "string" ? error.level.toLowerCase() : "";
+  if (level === "warn" || level === "info") return false;
+  const type = error.type;
+  if (Array.isArray(type) && typeof type[0] === "string") {
+    if (type[0] === "PartialParsing") return false;
+  }
+  if (typeof type === "string" && type === "PartialParsing") return false;
+  return true;
+}
+
+function summarizeSemgrepErrors(errors: unknown[], kind: "blocking" | "partial"): string {
+  const summaries = errors
+    .map((error) => summarizeSemgrepError(error))
+    .filter((message): message is string => Boolean(message))
+    .slice(0, 3);
+  const remainder = errors.length > summaries.length
+    ? ` (+${errors.length - summaries.length} more)`
+    : "";
+  const prefix =
+    kind === "partial"
+      ? "Semgrep completed with partial parsing coverage"
+      : "Semgrep reported blocking scanner errors";
+  if (summaries.length === 0) {
+    return `${prefix} (${errors.length} error record(s))`;
+  }
+  return `${prefix}: ${summaries.join("; ")}${remainder}`;
+}
+
+function summarizeSemgrepError(error: unknown): string | null {
+  if (!isRecord(error)) return null;
+  const message = typeof error.message === "string" ? error.message.trim() : "";
+  if (message) {
+    const firstLine = message.split("\n")[0]?.trim() ?? message;
+    return firstLine.length > 180 ? `${firstLine.slice(0, 177)}...` : firstLine;
+  }
+  const type = error.type;
+  if (Array.isArray(type) && typeof type[0] === "string") {
+    return type[0];
+  }
+  if (typeof type === "string") return type;
+  return "scanner error";
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

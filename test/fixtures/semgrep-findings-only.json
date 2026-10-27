@@ -1,0 +1,17 @@
+{
+  "version": "1.0.0",
+  "results": [
+    {
+      "check_id": "python.lang.security.audit.eval-detected.eval-detected",
+      "path": "app.py",
+      "start": { "line": 1, "col": 1, "offset": 0 },
+      "end": { "line": 1, "col": 10, "offset": 9 },
+      "extra": {
+        "message": "Detected use of eval",
+        "severity": "ERROR",
+        "metadata": { "confidence": "HIGH", "cwe": ["CWE-95"] }
+      }
+    }
+  ],
+  "errors": []
+}

@@ -9,7 +9,12 @@ export interface ProcessResult {
   stderr: string;
   timedOut: boolean;
   durationMs: number;
+  stdoutTruncated: boolean;
+  stderrTruncated: boolean;
 }
+
+export const DEFAULT_MAX_CAPTURE_BYTES = 1_048_576;
+export const DART_ANALYZE_MAX_CAPTURE_BYTES = 32_778_240;
 
 const environmentAllowlist = [
   "PATH",
@@ -39,9 +44,13 @@ export async function runCommand(
     cwd: string;
     timeoutMs: number;
     env?: NodeJS.ProcessEnv;
+    maxStdoutBytes?: number;
+    maxStderrBytes?: number;
   },
 ): Promise<ProcessResult> {
   const started = Date.now();
+  const maxStdoutBytes = options.maxStdoutBytes ?? DEFAULT_MAX_CAPTURE_BYTES;
+  const maxStderrBytes = options.maxStderrBytes ?? DEFAULT_MAX_CAPTURE_BYTES;
   return new Promise((resolve, reject) => {
     const child = spawn(command, args, {
       cwd: options.cwd,
@@ -49,13 +58,22 @@ export async function runCommand(
       stdio: ["ignore", "pipe", "pipe"],
       detached: process.platform !== "win32",
     });
-    let stdout = "";
-    let stderr = "";
+    let terminatedForTruncation = false;
+    const terminateForTruncation = () => {
+      if (terminatedForTruncation) return;
+      terminatedForTruncation = true;
+      child.stdout?.destroy();
+      child.stderr?.destroy();
+      if (process.platform === "win32") child.kill("SIGKILL");
+      else if (child.pid) process.kill(-child.pid, "SIGKILL");
+    };
+    const stdoutCapture = createBoundedCapture(maxStdoutBytes, terminateForTruncation);
+    const stderrCapture = createBoundedCapture(maxStderrBytes, terminateForTruncation);
     child.stdout.setEncoding("utf8").on("data", (chunk: string) => {
-      stdout += chunk;
+      stdoutCapture.append(chunk);
     });
     child.stderr.setEncoding("utf8").on("data", (chunk: string) => {
-      stderr += chunk;
+      stderrCapture.append(chunk);
     });
     let timedOut = false;
     const timer = setTimeout(() => {
@@ -71,13 +89,50 @@ export async function runCommand(
       clearTimeout(timer);
       resolve({
         exitCode,
-        stdout,
-        stderr,
+        stdout: stdoutCapture.text,
+        stderr: stderrCapture.text,
         timedOut,
         durationMs: Date.now() - started,
+        stdoutTruncated: stdoutCapture.truncated,
+        stderrTruncated: stderrCapture.truncated,
       });
     });
   });
+}
+
+function createBoundedCapture(
+  maxBytes: number,
+  onTruncate?: () => void,
+): {
+  text: string;
+  truncated: boolean;
+  append(chunk: string): void;
+} {
+  let bytes = 0;
+  let text = "";
+  let truncated = false;
+  return {
+    text: "",
+    truncated: false,
+    append(chunk: string) {
+      if (truncated) return;
+      const chunkBytes = Buffer.byteLength(chunk, "utf8");
+      if (bytes + chunkBytes <= maxBytes) {
+        text += chunk;
+        bytes += chunkBytes;
+        this.text = text;
+        return;
+      }
+      const remaining = maxBytes - bytes;
+      if (remaining > 0) {
+        text += Buffer.from(chunk, "utf8").subarray(0, remaining).toString("utf8");
+      }
+      truncated = true;
+      this.truncated = true;
+      this.text = `${text}\n[TRUNCATED: output exceeded ${maxBytes} bytes]\n`;
+      onTruncate?.();
+    },
+  };
 }
 
 export async function runComposeTool(options: {
@@ -127,7 +182,7 @@ export async function persistProcessLog(
   const logPath = path.join(rawDirectory, `${safeName(toolId)}.log`);
   await writeFile(
     logPath,
-    `exitCode=${String(result.exitCode)}\ntimedOut=${String(result.timedOut)}\n\nSTDOUT\n${result.stdout}\n\nSTDERR\n${result.stderr}`,
+    `exitCode=${String(result.exitCode)}\ntimedOut=${String(result.timedOut)}\nstdoutTruncated=${String(result.stdoutTruncated)}\nstderrTruncated=${String(result.stderrTruncated)}\n\nSTDOUT\n${result.stdout}\n\nSTDERR\n${result.stderr}`,
     { mode: 0o600 },
   );
   return logPath;

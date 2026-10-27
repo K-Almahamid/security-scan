@@ -40,6 +40,12 @@ import type {
   ToolPlan,
   ToolRun,
 } from "./types.js";
+import {
+  createInitialWorkflowRun,
+  recordDeterministicScanCompletion,
+  type WorkflowRunRecord,
+} from "./workflow-run.js";
+import type { WorkflowRequest } from "./workflow.js";
 
 export interface ScanOptions {
   repo: string;
@@ -50,6 +56,7 @@ export interface ScanOptions {
   timeoutMs?: number;
   keepRaw?: boolean;
   failOn?: SecurityScanConfig["policy"]["failOn"];
+  workflowRequest?: WorkflowRequest;
 }
 
 export interface ScanOutcome {
@@ -72,6 +79,13 @@ export async function runSecurityScan(options: ScanOptions): Promise<ScanOutcome
     );
   }
   const scanId = await createScanId(repoPath, startedAt);
+  const workflowRequest = options.workflowRequest ?? "deterministic-only";
+  let workflowRun: WorkflowRunRecord = createInitialWorkflowRun({
+    scanId,
+    repositoryPath: repoPath,
+    request: workflowRequest,
+    startedAt: startedAt.toISOString(),
+  });
   const reportRoot = resolveReportsDirectory(
     repoPath,
     options.reportsDir ?? config.reportsDir,
@@ -147,7 +161,15 @@ export async function runSecurityScan(options: ScanOptions): Promise<ScanOutcome
     rawArtifactsPath: rawDirectory,
     reportDirectory,
   };
-  await writeReports({ reportDirectory, profile, plan, manifest, findings });
+  workflowRun = recordDeterministicScanCompletion(workflowRun, manifest);
+  await writeReports({
+    reportDirectory,
+    profile,
+    plan,
+    manifest,
+    findings,
+    workflowRun,
+  });
 
   if (options.keepRaw) {
     const destination = path.join(reportDirectory, "raw");

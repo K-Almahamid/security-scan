@@ -1,0 +1,215 @@
+{
+  "version": "1.143.1",
+  "results": [
+    {
+      "check_id": "javascript.lang.security.audit.detect-non-literal-regexp.detect-non-literal-regexp",
+      "path": "/src/.agents/skills/impeccable/scripts/detect-csp.mjs",
+      "start": {
+        "line": 94,
+        "col": 7,
+        "offset": 3262
+      },
+      "end": {
+        "line": 94,
+        "col": 50,
+        "offset": 3305
+      },
+      "extra": {
+        "message": "RegExp() called with a `name` function argument, this might allow an attacker to cause a Regular Expression Denial-of-Service (ReDoS) within your application as RegExP blocks the main thread. For this reason, it is recommended to use hardcoded regexes instead. If your regex is run on user-controlled input, consider performing input validation or use a regex checking/sanitization library such as https://www.npmjs.com/package/recheck to verify that the regex does not appear vulnerable to ReDoS.",
+        "metadata": {
+          "owasp": [
+            "A05:2021 - Security Misconfiguration",
+            "A06:2017 - Security Misconfiguration",
+            "A02:2025 - Security Misconfiguration"
+          ],
+          "cwe": [
+            "CWE-1333: Inefficient Regular Expression Complexity"
+          ],
+          "references": [
+            "https://owasp.org/www-community/attacks/Regular_expression_Denial_of_Service_-_ReDoS"
+          ],
+          "source-rule-url": "https://github.com/nodesecurity/eslint-plugin-security/blob/master/rules/detect-non-literal-regexp.js",
+          "category": "security",
+          "technology": [
+            "javascript"
+          ],
+          "subcategory": [
+            "vuln"
+          ],
+          "likelihood": "MEDIUM",
+          "impact": "MEDIUM",
+          "confidence": "LOW",
+          "license": "Semgrep Rules License v1.0. For more details, visit semgrep.dev/legal/rules-license",
+          "vulnerability_class": [
+            "Denial-of-Service (DoS)"
+          ],
+          "source": "https://semgrep.dev/r/javascript.lang.security.audit.detect-non-literal-regexp.detect-non-literal-regexp",
+          "shortlink": "https://sg.run/gr65"
+        },
+        "severity": "WARNING",
+        "fingerprint": "requires login",
+        "lines": "requires login",
+        "validation_state": "NO_VALIDATOR",
+        "engine_kind": "OSS"
+      }
+    }
+  ],
+  "errors": [
+    {
+      "code": 3,
+      "level": "warn",
+      "type": [
+        "PartialParsing",
+        [
+          {
+            "path": "/src/dashboard/app/admin/page.tsx",
+            "start": {
+              "line": 459,
+              "col": 44,
+              "offset": 0
+            },
+            "end": {
+              "line": 459,
+              "col": 54,
+              "offset": 10
+            }
+          },
+          {
+            "path": "/src/dashboard/app/admin/page.tsx",
+            "start": {
+              "line": 460,
+              "col": 42,
+              "offset": 0
+            },
+            "end": {
+              "line": 460,
+              "col": 52,
+              "offset": 10
+            }
+          },
+          {
+            "path": "/src/dashboard/app/admin/page.tsx",
+            "start": {
+              "line": 540,
+              "col": 43,
+              "offset": 0
+            },
+            "end": {
+              "line": 540,
+              "col": 56,
+              "offset": 13
+            }
+          }
+        ]
+      ],
+      "message": "Syntax error at line /src/dashboard/app/admin/page.tsx:459:\n `&limit=100` was unexpected",
+      "path": "/src/dashboard/app/admin/page.tsx",
+      "spans": [
+        {
+          "file": "/src/dashboard/app/admin/page.tsx",
+          "start": {
+            "line": 459,
+            "col": 44,
+            "offset": 0
+          },
+          "end": {
+            "line": 459,
+            "col": 54,
+            "offset": 10
+          }
+        },
+        {
+          "file": "/src/dashboard/app/admin/page.tsx",
+          "start": {
+            "line": 460,
+            "col": 42,
+            "offset": 0
+          },
+          "end": {
+            "line": 460,
+            "col": 52,
+            "offset": 10
+          }
+        },
+        {
+          "file": "/src/dashboard/app/admin/page.tsx",
+          "start": {
+            "line": 540,
+            "col": 43,
+            "offset": 0
+          },
+          "end": {
+            "line": 540,
+            "col": 56,
+            "offset": 13
+          }
+        }
+      ]
+    },
+    {
+      "code": 3,
+      "level": "warn",
+      "type": [
+        "PartialParsing",
+        [
+          {
+            "path": "/src/dashboard/components/admin/OverviewKpiCharts.tsx",
+            "start": {
+              "line": 829,
+              "col": 51,
+              "offset": 0
+            },
+            "end": {
+              "line": 829,
+              "col": 61,
+              "offset": 10
+            }
+          },
+          {
+            "path": "/src/dashboard/components/admin/OverviewKpiCharts.tsx",
+            "start": {
+              "line": 832,
+              "col": 50,
+              "offset": 0
+            },
+            "end": {
+              "line": 832,
+              "col": 60,
+              "offset": 10
+            }
+          }
+        ]
+      ],
+      "message": "Syntax error at line /src/dashboard/components/admin/OverviewKpiCharts.tsx:829:\n `&limit=500` was unexpected",
+      "path": "/src/dashboard/components/admin/OverviewKpiCharts.tsx",
+      "spans": [
+        {
+          "file": "/src/dashboard/components/admin/OverviewKpiCharts.tsx",
+          "start": {
+            "line": 829,
+            "col": 51,
+            "offset": 0
+          },
+          "end": {
+            "line": 829,
+            "col": 61,
+            "offset": 10
+          }
+        },
+        {
+          "file": "/src/dashboard/components/admin/OverviewKpiCharts.tsx",
+          "start": {
+            "line": 832,
+            "col": 50,
+            "offset": 0
+          },
+          "end": {
+            "line": 832,
+            "col": 60,
+            "offset": 10
+          }
+        }
+      ]
+    }
+  ]
+}

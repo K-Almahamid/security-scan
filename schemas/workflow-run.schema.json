@@ -1,0 +1,46 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://security-scan.local/schemas/workflow-run.schema.json",
+  "title": "Security Scan workflow run",
+  "type": "object",
+  "required": [
+    "schemaVersion",
+    "revision",
+    "scanId",
+    "repositoryPath",
+    "request",
+    "startedAt",
+    "steps",
+    "cloudflare",
+    "assessmentStatus"
+  ],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "revision": { "type": "integer", "minimum": 1 },
+    "scanId": { "type": "string" },
+    "repositoryPath": { "type": "string" },
+    "request": { "enum": ["full", "deterministic-only"] },
+    "startedAt": { "type": "string", "format": "date-time" },
+    "completedAt": { "type": ["string", "null"], "format": "date-time" },
+    "assessmentStatus": {
+      "enum": ["pending", "complete", "complete_with_findings", "incomplete"]
+    },
+    "steps": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "layer", "required", "requested", "status", "executed"],
+        "properties": {
+          "id": { "type": "string" },
+          "layer": { "enum": ["deterministic", "cloudflare", "attachment"] },
+          "required": { "type": "boolean" },
+          "requested": { "type": "boolean" },
+          "status": {
+            "enum": ["pending", "running", "completed", "failed", "skipped"]
+          },
+          "executed": { "type": "boolean" }
+        }
+      }
+    }
+  }
+}

@@ -9,6 +9,12 @@ import { importCloudflareFindings, parseCloudflareFindings } from "./import.js";
 import { mergeDeterministicWithSourceAudit } from "./merge.js";
 import { readUpstreamCommit } from "./paths.js";
 import { validateCloudflareFindingsFile } from "./validate.js";
+import {
+  loadWorkflowRun,
+  recordSourceAuditAttachment,
+  recordSourceAuditValidation,
+  updateWorkflowRun,
+} from "../workflow-run.js";
 
 export interface AttachSourceAuditOptions {
   repoPath: string;
@@ -49,6 +55,10 @@ async function attachInsideRepository(
   );
   const validation = await validateCloudflareFindingsFile(options.sourceAuditFindingsPath);
   if (!validation.ok) {
+    await updateWorkflowRunOnValidationFailure(
+      reportDirectory,
+      validation.output || "Source audit findings failed validation.",
+    );
     return {
       ok: false,
       exitCode: 3,
@@ -98,6 +108,8 @@ async function attachInsideRepository(
     manifest.overallStatus = "complete_with_findings";
   }
 
+  await updateWorkflowRunAfterAttach(reportDirectory, options.sourceAuditFindingsPath);
+
   await commitReportFiles([
     {
       filePath: path.join(reportDirectory, "source-audit-records.json"),
@@ -117,6 +129,41 @@ async function attachInsideRepository(
     message: "Attached validated source-audit findings to the scan report.",
     mergedFindings: merged,
   };
+}
+
+async function updateWorkflowRunOnValidationFailure(
+  reportDirectory: string,
+  failureReason: string,
+): Promise<void> {
+  const existing = await loadWorkflowRun(reportDirectory);
+  if (!existing) return;
+  await updateWorkflowRun(reportDirectory, (current) => {
+    let next = recordSourceAuditValidation(current, { passed: false, failureReason });
+    next = recordSourceAuditAttachment(next, {
+      attached: false,
+      failureReason,
+    });
+    return next;
+  });
+}
+
+async function updateWorkflowRunAfterAttach(
+  reportDirectory: string,
+  sourceAuditFindingsPath: string,
+): Promise<void> {
+  const existing = await loadWorkflowRun(reportDirectory);
+  if (!existing) return;
+  await updateWorkflowRun(reportDirectory, (current) => {
+    let next = recordSourceAuditValidation(current, { passed: true });
+    next = recordSourceAuditAttachment(next, { attached: true });
+    // Report-attachment state: record that validated findings were imported.
+    // This does not set cloudflare.invoked or phases; full-workflow steps exist
+    // only when workflow-run.request is "full".
+    next.cloudflare.findingsPath = path.basename(sourceAuditFindingsPath);
+    next.cloudflare.validation = "passed";
+    next.cloudflare.attached = true;
+    return next;
+  });
 }
 
 export async function commitReportFiles(

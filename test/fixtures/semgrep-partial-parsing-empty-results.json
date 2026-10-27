@@ -1,0 +1,162 @@
+{
+  "version": "1.143.1",
+  "results": [],
+  "errors": [
+    {
+      "code": 3,
+      "level": "warn",
+      "type": [
+        "PartialParsing",
+        [
+          {
+            "path": "/src/dashboard/app/admin/page.tsx",
+            "start": {
+              "line": 459,
+              "col": 44,
+              "offset": 0
+            },
+            "end": {
+              "line": 459,
+              "col": 54,
+              "offset": 10
+            }
+          },
+          {
+            "path": "/src/dashboard/app/admin/page.tsx",
+            "start": {
+              "line": 460,
+              "col": 42,
+              "offset": 0
+            },
+            "end": {
+              "line": 460,
+              "col": 52,
+              "offset": 10
+            }
+          },
+          {
+            "path": "/src/dashboard/app/admin/page.tsx",
+            "start": {
+              "line": 540,
+              "col": 43,
+              "offset": 0
+            },
+            "end": {
+              "line": 540,
+              "col": 56,
+              "offset": 13
+            }
+          }
+        ]
+      ],
+      "message": "Syntax error at line /src/dashboard/app/admin/page.tsx:459:\n `&limit=100` was unexpected",
+      "path": "/src/dashboard/app/admin/page.tsx",
+      "spans": [
+        {
+          "file": "/src/dashboard/app/admin/page.tsx",
+          "start": {
+            "line": 459,
+            "col": 44,
+            "offset": 0
+          },
+          "end": {
+            "line": 459,
+            "col": 54,
+            "offset": 10
+          }
+        },
+        {
+          "file": "/src/dashboard/app/admin/page.tsx",
+          "start": {
+            "line": 460,
+            "col": 42,
+            "offset": 0
+          },
+          "end": {
+            "line": 460,
+            "col": 52,
+            "offset": 10
+          }
+        },
+        {
+          "file": "/src/dashboard/app/admin/page.tsx",
+          "start": {
+            "line": 540,
+            "col": 43,
+            "offset": 0
+          },
+          "end": {
+            "line": 540,
+            "col": 56,
+            "offset": 13
+          }
+        }
+      ]
+    },
+    {
+      "code": 3,
+      "level": "warn",
+      "type": [
+        "PartialParsing",
+        [
+          {
+            "path": "/src/dashboard/components/admin/OverviewKpiCharts.tsx",
+            "start": {
+              "line": 829,
+              "col": 51,
+              "offset": 0
+            },
+            "end": {
+              "line": 829,
+              "col": 61,
+              "offset": 10
+            }
+          },
+          {
+            "path": "/src/dashboard/components/admin/OverviewKpiCharts.tsx",
+            "start": {
+              "line": 832,
+              "col": 50,
+              "offset": 0
+            },
+            "end": {
+              "line": 832,
+              "col": 60,
+              "offset": 10
+            }
+          }
+        ]
+      ],
+      "message": "Syntax error at line /src/dashboard/components/admin/OverviewKpiCharts.tsx:829:\n `&limit=500` was unexpected",
+      "path": "/src/dashboard/components/admin/OverviewKpiCharts.tsx",
+      "spans": [
+        {
+          "file": "/src/dashboard/components/admin/OverviewKpiCharts.tsx",
+          "start": {
+            "line": 829,
+            "col": 51,
+            "offset": 0
+          },
+          "end": {
+            "line": 829,
+            "col": 61,
+            "offset": 10
+          }
+        },
+        {
+          "file": "/src/dashboard/components/admin/OverviewKpiCharts.tsx",
+          "start": {
+            "line": 832,
+            "col": 50,
+            "offset": 0
+          },
+          "end": {
+            "line": 832,
+            "col": 60,
+            "offset": 10
+          }
+        }
+      ]
+    }
+  ]
+}

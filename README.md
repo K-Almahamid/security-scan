@@ -249,9 +249,13 @@ Those files do not perform the hunt.
 security-scan --help
 security-scan version
 
+security-scan doctor --repo /absolute/path/to/repository [--workflow full|deterministic-only] [--json]
 security-scan profile --repo /absolute/path/to/repository
 security-scan validate-config --repo /absolute/path/to/repository
-security-scan scan --repo /absolute/path/to/repository --mode standard
+security-scan scan --repo /absolute/path/to/repository --mode standard [--workflow full|deterministic-only]
+
+security-scan workflow assess --repo /absolute/path/to/repository --scan-dir security-reports/<scan-id> [--workflow full|deterministic-only] [--json]
+security-scan workflow register-cloudflare --repo /absolute/path/to/repository --scan-dir security-reports/<scan-id> --status completed --invoked true ...
 
 security-scan audit validate --repo /absolute/path/to/repository --findings /path/to/findings.json
 security-scan audit import --repo /absolute/path/to/repository --findings /path/to/findings.json
@@ -264,13 +268,61 @@ change that output.
 `validate-config` loads `.security-scan.json`, or `--config`, and prints that
 the configuration is valid. It does not scan.
 
-`scan` accepts only `--mode standard`. Any other mode exits `3`.
+`scan` accepts only `--mode standard`. Any other mode exits `3`. `--workflow`
+defaults to `deterministic-only`. Use `--workflow full` when the Cursor skill
+will continue with the Cloudflare source audit for the same report directory.
+
+`doctor` checks Node.js, Docker Compose, the planned scan, optional Dart, and
+Cursor skill installation paths. It does not install anything. Exit `0` when
+the requested workflow can proceed, `1` when optional full-audit integrations
+are missing, and `2` when deterministic prerequisites are missing.
+
+`workflow assess` reads `scan-manifest.json` and `workflow-run.json`, applies
+the rules in `src/workflow.ts`, and prints a combined assessment. A successful
+deterministic scan does not imply a successful full audit.
+
+`workflow register-cloudflare` records agent-reported Cloudflare phase outcomes
+in `workflow-run.json`. The CLI does not launch the hunt; registration is how
+the agent attests what it actually executed.
+
+### Workflow state (`workflow-run.json`)
+
+Each scan writes [schemas/workflow-run.schema.json](schemas/workflow-run.schema.json)
+alongside the report. It records the requested workflow (`full` or
+`deterministic-only`), per-step status, Cloudflare validation/attachment state,
+and the final assessment status. The deterministic scan updates the
+`standard-scan` step; the agent updates Cloudflare registration; `audit attach`
+updates validation and attachment.
 
 `audit validate` checks `findings.json` against the vendored Cloudflare report
 schema. `audit import` validates, then prints importable findings, rejected
 records, and verdict counts. It does not write a report. `audit attach` requires
 an existing report directory. `--scan-dir` may be absolute or relative to
 `--repo`. Audit paths that contain `..` or start with `~` are rejected.
+
+#### Cloudflare fields in `workflow-run.json` (do not conflate them)
+
+| Field / concept | Meaning |
+|-----------------|--------|
+| `request` | What the **scan** was asked to plan (`full` adds Cloudflare steps to the workflow record; `deterministic-only` does not). |
+| `cloudflare.invoked` | Agent attestation (via `workflow register-cloudflare`) that the upstream Cloudflare **hunt was started** in the session. The CLI never sets this to `true` by itself. |
+| `cloudflare.phasesCompleted` | Phase IDs the agent reports it finished. Empty unless registration lists them. |
+| `cloudflare.validation` | Whether `audit validate` / `audit attach` successfully validated the findings file against the Cloudflare schema (`passed`, `failed`, or `not_run`). |
+| `cloudflare.attached` | Whether validated source-audit findings were **imported into this report** (`audit attach`). This is report state, not proof that the hunt ran. |
+| `validate-and-attach` step | Present only when `request` is `full`. Records the attach step in the full workflow plan. |
+
+**Supported pattern:** run `scan --workflow deterministic-only`, perform the
+Cloudflare hunt outside the CLI (Cursor skill), then `audit attach` to merge
+findings. `workflow-run.json` may show `request: "deterministic-only"`,
+`cloudflare.invoked: false`, and `cloudflare.attached: true` after attach.
+That means **findings were attached**, not that the full six-phase workflow
+was registered or that `workflow assess --workflow full` would succeed. Use
+`workflow register-cloudflare` plus `workflow assess` with a `full` scan when
+you need combined full-audit status.
+
+Attachment does **not** mark the Cloudflare hunt as invoked and does **not**
+complete full-workflow phase tracking unless the agent registers phases
+separately.
 
 ### Scan options
 
@@ -364,11 +416,16 @@ A standard scan writes:
 ├── findings.json
 ├── scan-manifest.json
 ├── profile.json
-└── scan-plan.json
+├── scan-plan.json
+└── workflow-run.json
 ```
 
 `<scan-id>` is a timestamp plus the short Git revision, or `nogit` when that
 revision cannot be read.
+
+`workflow-run.json` records the requested workflow, per-step execution state,
+and Cloudflare validation/attachment status. Scans created before 0.4.0 may not
+include this file.
 
 `audit attach` also writes `source-audit-records.json` in that directory: the
 audit records as submitted, including rejected ones. It rewrites
@@ -421,6 +478,30 @@ mean the CLI watched the six phases. The agent reports phase completion only
 for phases it finished. If the deterministic scan succeeds and Cloudflare does
 not, the CLI status stays complete or complete with findings and the combined
 audit is incomplete. That does not change the CLI exit code.
+
+#### Finding counts (per tool vs normalized report)
+
+Three layers often differ; that is expected:
+
+1. **Per tool run (`toolRuns[].findingCount`)** — Findings the adapter parsed
+   from that scanner's output **before** global deduplication. Markdown layer
+   rows (for example `| Semgrep CE | failed (100 finding(s)) |`) sum these
+   per-adapter counts.
+2. **`findings.json` after `scan`** — All tool findings passed through
+   `deduplicateFindings` once for the deterministic scan.
+3. **`findings.json` after `audit attach`** — Deterministic findings merged
+   with importable source-audit findings, then deduplicated again.
+
+Illustrative example only (not verified against a specific customer report):
+a Semgrep run might record **100** findings at the tool layer while the
+normalized `findings.json` contains **96** rows after deduplication removes
+exact duplicates. Rejected source-audit candidates never enter `findings.json`;
+their counts appear under `manifest.sourceAudit.counts.rejected`.
+
+`manifest.counts` always reflects the current `findings.json`, not the sum of
+`toolRuns[].findingCount`. A failed required scanner still leaves
+`overallStatus` as `incomplete`; attach does not upgrade `incomplete` to
+`complete` or `complete_with_findings`.
 
 Canonical findings keep per-tool severity, confidence, location, and sanitized
 evidence on each source record. Exact duplicates from the same provenance may
