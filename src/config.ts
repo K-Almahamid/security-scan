@@ -32,11 +32,13 @@ export const configSchema = z
           .default({ enabled: "auto", offline: false }),
         semgrep: toolToggleSchema.default({ enabled: "auto" }),
         dartAnalyze: toolToggleSchema.default({ enabled: "auto" }),
+        gitleaks: toolToggleSchema.default({ enabled: false }),
       })
       .default({
         trivy: { enabled: "auto", offline: false },
         semgrep: { enabled: "auto" },
         dartAnalyze: { enabled: "auto" },
+        gitleaks: { enabled: false },
       }),
     policy: z
       .object({

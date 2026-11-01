@@ -5,11 +5,12 @@ import { fileURLToPath } from "node:url";
 import { buildScanPlan } from "./planner.js";
 import { loadConfig } from "./config.js";
 import { allowedHostEnvironment, runCommand } from "./execution.js";
+import { commandOnPath, dartAnalyzerPluginSkipReason } from "./adapters.js";
 import { evaluateCapabilityReadiness } from "./registry.js";
 import { assertRepositoryPath, profileRepository } from "./profile.js";
 import { cloudflareSkillCandidates, type WorkflowRequest } from "./workflow.js";
 
-export const CLI_VERSION = "0.4.0";
+export const CLI_VERSION = "0.5.0";
 
 export interface DoctorCheck {
   id: string;
@@ -90,14 +91,19 @@ export async function runDoctor(input: {
     timeoutMs: 15_000,
     env: allowedHostEnvironment(),
   }).catch(() => null);
+  const trivyHost = await commandOnPath("trivy", repoPath);
+  const semgrepHost = await commandOnPath("semgrep", repoPath);
+  const gitleaksHost = await commandOnPath("gitleaks", repoPath, ["version"]);
+  const dockerOk = docker?.exitCode === 0;
   checks.push({
     id: "docker-compose",
     category: "required",
-    status: docker?.exitCode === 0 ? "pass" : "fail",
-    message:
-      docker?.exitCode === 0
-        ? "Docker Compose is available."
-        : "Docker Compose is unavailable; Trivy and Semgrep cannot run.",
+    status: dockerOk ? "pass" : trivyHost && semgrepHost ? "warn" : "fail",
+    message: dockerOk
+      ? "Docker Compose is available. Trivy and Semgrep use the pinned images."
+      : trivyHost && semgrepHost
+        ? "Docker Compose is unavailable. Installed trivy and semgrep binaries will run instead, and the report records that they are not the pinned images."
+        : "Docker Compose is unavailable and a required trivy or semgrep binary is not installed.",
   });
 
   const config = await loadConfig(repoPath, input.configPath);
@@ -129,8 +135,13 @@ export async function runDoctor(input: {
     config,
     plan,
     prerequisites: {
-      "docker-compose": docker?.exitCode === 0,
+      "docker-compose": dockerOk,
       "dart-sdk": dart?.exitCode === 0,
+      gitleaks: gitleaksHost,
+    },
+    hostFallback: {
+      trivy: trivyHost,
+      semgrep: semgrepHost,
     },
   });
   for (const readiness of capabilityReadiness) {
@@ -139,6 +150,29 @@ export async function runDoctor(input: {
       category: readiness.category,
       status: readiness.status,
       message: readiness.message,
+    });
+  }
+
+  const pluginSkips = (
+    await Promise.all(
+      profile.components
+        .filter((component) => component.languages.includes("dart"))
+        .map((component) =>
+          dartAnalyzerPluginSkipReason(
+            repoPath,
+            path.resolve(repoPath, component.path),
+            false,
+          ),
+        ),
+    )
+  ).filter((reason): reason is string => Boolean(reason));
+  if (pluginSkips.length > 0) {
+    checks.push({
+      id: "dart-analyzer-plugins",
+      category: "optional",
+      status: "warn",
+      message:
+        "analysis_options.yaml or an included options file declares Dart analyzer plugins, or the include chain could not be verified. The scan skips host dart analyze unless you pass --allow-dart-plugins.",
     });
   }
 

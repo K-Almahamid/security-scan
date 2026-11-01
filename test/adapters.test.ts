@@ -1,10 +1,18 @@
 import assert from "node:assert/strict";
+import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import { describe, it } from "node:test";
 import {
+  analysisOptionsDeclarePlugins,
+  assessDartAnalyzerPlugins,
+  createAdapters,
+  dartAnalyzerPluginSkipReason,
   parseDartAnalyze,
   parseSemgrep,
   parseTrivy,
 } from "../src/adapters.js";
+import type { ToolPlan } from "../src/types.js";
 
 describe("tool output adapters", () => {
   it("normalizes Trivy vulnerabilities, secrets, and misconfigurations", () => {
@@ -172,5 +180,81 @@ describe("tool output adapters", () => {
     assert.equal(findings.length, 1);
     assert.equal(findings[0]?.location.path, "lib/main.dart");
     assert.equal(findings[0]?.severity, "medium");
+  });
+
+  it("detects analyzer plugins and skips host dart analyze unless opted in", async () => {
+    assert.equal(analysisOptionsDeclarePlugins("include: package:lints/recommended.yaml\n"), false);
+    assert.equal(analysisOptionsDeclarePlugins("# plugins:\n"), false);
+    assert.equal(analysisOptionsDeclarePlugins("plugins:\n  custom_lint:\n"), true);
+    assert.equal(analysisOptionsDeclarePlugins("analyzer:\n  plugins:\n    - custom_lint\n"), true);
+
+    const repo = await mkdtemp(path.join(os.tmpdir(), "security-scan-dart-plugins-"));
+    await mkdir(path.join(repo, ".dart_tool"), { recursive: true });
+    await writeFile(path.join(repo, ".dart_tool/package_config.json"), "{}\n");
+    await writeFile(path.join(repo, "analysis_options.yaml"), "analyzer:\n  plugins:\n    - custom_lint\n");
+    const plan: ToolPlan = {
+      id: "dart-analyze-root",
+      adapter: "dart-analyze",
+      componentId: "root",
+      targetPath: ".",
+      required: false,
+      checks: ["dart-static-analysis"],
+      reason: "fixture",
+    };
+    const adapter = createAdapters().get("dart-analyze");
+    assert.ok(adapter);
+    const blocked = await adapter.checkPrerequisites(plan, {
+      repoPath: repo,
+      rawDirectory: repo,
+      composeFile: "unused",
+      offline: false,
+      timeoutMs: 1_000,
+      exclude: [],
+    });
+    assert.match(blocked ?? "", /--allow-dart-plugins/);
+    const allowed = await adapter.checkPrerequisites(plan, {
+      repoPath: repo,
+      rawDirectory: repo,
+      composeFile: "unused",
+      offline: false,
+      timeoutMs: 1_000,
+      exclude: [],
+      allowDartPlugins: true,
+    });
+    assert.equal(Boolean(allowed?.includes("plugins")), false);
+    const direct = await dartAnalyzerPluginSkipReason(repo, repo, false);
+    assert.match(direct ?? "", /plugins/);
+  });
+
+  it("follows included plugins and refuses unresolved or circular-unreadable chains", async () => {
+    const repo = await mkdtemp(path.join(os.tmpdir(), "security-scan-dart-include-"));
+    await mkdir(path.join(repo, "vendor", "bad_lints"), { recursive: true });
+    await mkdir(path.join(repo, ".dart_tool"), { recursive: true });
+    await writeFile(
+      path.join(repo, ".dart_tool", "package_config.json"),
+      `${JSON.stringify({
+        configVersion: 2,
+        packages: [{ name: "bad_lints", rootUri: "../vendor/bad_lints" }],
+      })}\n`,
+    );
+    await writeFile(path.join(repo, "vendor/bad_lints/analysis.yaml"), "plugins:\n  custom_lint:\n");
+    await writeFile(path.join(repo, "analysis_options.yaml"), "include: package:bad_lints/analysis.yaml\n");
+    assert.equal(await assessDartAnalyzerPlugins(repo, repo), "plugins");
+
+    await writeFile(path.join(repo, "a.yaml"), "include: b.yaml\n");
+    await writeFile(path.join(repo, "b.yaml"), "include: a.yaml\n");
+    await writeFile(path.join(repo, "analysis_options.yaml"), "include: a.yaml\n");
+    assert.equal(await assessDartAnalyzerPlugins(repo, repo), "safe");
+
+    await writeFile(path.join(repo, "analysis_options.yaml"), "include: missing.yaml\n");
+    assert.equal(await assessDartAnalyzerPlugins(repo, repo), "undetermined");
+    const unresolved = await dartAnalyzerPluginSkipReason(repo, repo, false);
+    assert.match(unresolved ?? "", /could not be determined/);
+    assert.equal(await dartAnalyzerPluginSkipReason(repo, repo, true), null);
+
+    await writeFile(path.join(repo, "analysis_options.yaml"), "include:\n  - extra.yaml\n");
+    assert.equal(await assessDartAnalyzerPlugins(repo, repo), "undetermined");
+    await writeFile(path.join(repo, "analysis_options.yaml"), "include: ../../outside.yaml\n");
+    assert.equal(await assessDartAnalyzerPlugins(repo, repo), "undetermined");
   });
 });

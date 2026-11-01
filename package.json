@@ -1,8 +1,27 @@
 {
-  "name": "@local/security-scan",
-  "version": "0.4.0",
-  "private": true,
-  "description": "Local, reusable security scan orchestrator for Cursor",
+  "name": "security-scan-cli",
+  "version": "0.5.0",
+  "description": "Local security scan orchestrator for repositories",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/K-Almahamid/security-scan.git"
+  },
+  "homepage": "https://github.com/K-Almahamid/security-scan#readme",
+  "bugs": {
+    "url": "https://github.com/K-Almahamid/security-scan/issues"
+  },
+  "keywords": ["security", "semgrep", "trivy", "sast", "sca"],
+  "files": [
+    "dist",
+    "compose",
+    "rules",
+    "schemas",
+    "skill",
+    "README.md",
+    "LICENSE",
+    "CHANGELOG.md",
+    "SECURITY.md"
+  ],
   "type": "module",
   "bin": {
     "security-scan": "./dist/cli.js"

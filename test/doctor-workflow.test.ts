@@ -231,10 +231,10 @@ describe("bounded subprocess output", () => {
 });
 
 describe("cli workflow integration", () => {
-  it("exposes doctor and version 0.4.0", () => {
+  it("exposes doctor and version 0.5.0", () => {
     const version = runCli(["version"]);
     assert.equal(version.status, 0);
-    assert.match(version.stdout, /0\.4\.0/);
+    assert.match(version.stdout, /0\.5\.0/);
     const help = runCli(["help"]);
     assert.match(help.stdout, /doctor/);
     assert.match(help.stdout, /workflow assess/);

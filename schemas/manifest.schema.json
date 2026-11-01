@@ -54,6 +54,36 @@
     },
     "coverageGaps": { "type": "array", "items": { "type": "string" } },
     "counts": { "type": "object" },
+    "findingSummary": {
+      "type": "object",
+      "properties": {
+        "perTool": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["id", "adapter", "findingCount"],
+            "properties": {
+              "id": { "type": "string" },
+              "adapter": { "type": "string" },
+              "findingCount": { "type": "integer", "minimum": 0 }
+            }
+          }
+        },
+        "rawToolFindingsTotal": { "type": "integer", "minimum": 0 },
+        "preDedupeCollected": { "type": "integer", "minimum": 0 },
+        "normalizedUnique": { "type": "integer", "minimum": 0 },
+        "duplicatesRemoved": { "type": "integer", "minimum": 0 },
+        "discardedDuringParse": { "type": ["integer", "null"], "minimum": 0 }
+      }
+    },
+    "git": {
+      "type": "object",
+      "required": ["commit", "dirty"],
+      "properties": {
+        "commit": { "type": ["string", "null"] },
+        "dirty": { "type": ["boolean", "null"] }
+      }
+    },
     "reportDirectory": { "type": "string" },
     "sourceAudit": {
       "type": "object",
@@ -72,7 +102,20 @@
             "rejected": { "type": "integer", "minimum": 0 }
           }
         },
-        "note": { "type": "string" }
+        "note": { "type": "string" },
+        "commitBinding": { "enum": ["matched", "unbound", "legacy-scan"] },
+        "targetCommit": { "type": ["string", "null"] },
+        "commitIdentity": {
+          "type": "object",
+          "properties": {
+            "attested": { "type": ["object", "null"] },
+            "scan": { "type": ["object", "null"] },
+            "observed": { "type": ["object", "null"] },
+            "agreement": {
+              "enum": ["not-checked", "attested-matches-scan", "legacy-unverified"]
+            }
+          }
+        }
       }
     }
   },

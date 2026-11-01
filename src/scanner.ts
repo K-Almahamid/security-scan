@@ -24,6 +24,7 @@ import {
   profileRepository,
 } from "./profile.js";
 import {
+  buildScanFindingSummary,
   coverageSummary,
   determineOverallStatus,
   executionSummary,
@@ -34,6 +35,7 @@ import type {
   AdapterContext,
   AdapterResult,
   CanonicalFinding,
+  ToolAdapter,
   OverallStatus,
   ScanManifest,
   Severity,
@@ -57,6 +59,7 @@ export interface ScanOptions {
   keepRaw?: boolean;
   failOn?: SecurityScanConfig["policy"]["failOn"];
   workflowRequest?: WorkflowRequest;
+  allowDartPlugins?: boolean;
 }
 
 export interface ScanOutcome {
@@ -78,7 +81,8 @@ export async function runSecurityScan(options: ScanOptions): Promise<ScanOutcome
       "No scanner was planned. Refusing to report a successful scan without an executed check.",
     );
   }
-  const scanId = await createScanId(repoPath, startedAt);
+  const git = await readRepositoryGit(repoPath);
+  const scanId = createScanId(startedAt, git.commit);
   const workflowRequest = options.workflowRequest ?? "deterministic-only";
   let workflowRun: WorkflowRunRecord = createInitialWorkflowRun({
     scanId,
@@ -101,6 +105,7 @@ export async function runSecurityScan(options: ScanOptions): Promise<ScanOutcome
     scanId,
     "raw",
   );
+  try {
   await mkdir(rawDirectory, { recursive: true, mode: 0o700 });
 
   const composeFile = path.resolve(
@@ -114,35 +119,16 @@ export async function runSecurityScan(options: ScanOptions): Promise<ScanOutcome
     offline: config.tools.trivy.offline || options.offline === true,
     timeoutMs: options.timeoutMs ?? 20 * 60_000,
     exclude: config.exclude,
+    allowDartPlugins: options.allowDartPlugins === true,
   };
   const adapters = createAdapters();
   const results = await mapConcurrent(
     plan.tools,
     Math.max(1, Math.min(options.jobs ?? 2, 8)),
-    async (toolPlan): Promise<AdapterResult> => {
-      const adapter = adapters.get(toolPlan.adapter);
-      if (!adapter) return unavailableResult(toolPlan, "No adapter is registered", "unsupported");
-      try {
-        const reason = await adapter.checkPrerequisites(toolPlan, context);
-        if (reason) {
-          return unavailableResult(
-            toolPlan,
-            reason,
-            toolPlan.required ? "failed" : "skipped",
-          );
-        }
-        return await adapter.execute(toolPlan, context);
-      } catch (error) {
-        if (error instanceof UsageError) throw error;
-        return unavailableResult(
-          toolPlan,
-          redactSensitiveText(error instanceof Error ? error.message : String(error)),
-          "failed",
-        );
-      }
-    },
+    (toolPlan) => dispatchTool(adapters, toolPlan, context),
   );
-  const findings = deduplicateFindings(results.flatMap((result) => result.findings));
+  const collectedFindings = results.flatMap((result) => result.findings);
+  const findings = deduplicateFindings(collectedFindings);
   const toolRuns = results.map((result) => result.run);
   const completedAt = new Date();
   const manifest: ScanManifest = {
@@ -158,6 +144,12 @@ export async function runSecurityScan(options: ScanOptions): Promise<ScanOutcome
     coverage: coverageSummary(plan, toolRuns),
     coverageGaps: plan.coverageGaps,
     counts: findingCounts(findings),
+    git,
+    findingSummary: buildScanFindingSummary({
+      toolRuns,
+      collectedFindings,
+      normalizedFindings: findings,
+    }),
     rawArtifactsPath: rawDirectory,
     reportDirectory,
   };
@@ -176,10 +168,12 @@ export async function runSecurityScan(options: ScanOptions): Promise<ScanOutcome
     await mkdir(destination, { recursive: true, mode: 0o700 });
     await copyRedactedRaw(rawDirectory, destination);
   }
-
   const threshold = options.failOn ?? config.policy.failOn;
   const exitCode = scanExitCode(manifest.overallStatus, findings, threshold);
   return { manifest, findings, exitCode };
+  } finally {
+    await rm(path.dirname(rawDirectory), { recursive: true, force: true });
+  }
 }
 
 export function scanExitCode(
@@ -213,6 +207,29 @@ function applyOverrides(
   };
 }
 
+export async function dispatchTool(
+  adapters: Map<string, ToolAdapter>,
+  toolPlan: ToolPlan,
+  context: AdapterContext,
+): Promise<AdapterResult> {
+  const adapter = adapters.get(toolPlan.adapter);
+  if (!adapter) return unavailableResult(toolPlan, "No adapter is registered", "unsupported");
+  try {
+    const reason = await adapter.checkPrerequisites(toolPlan, context);
+    if (reason) {
+      return unavailableResult(toolPlan, reason, toolPlan.required ? "failed" : "skipped");
+    }
+    return await adapter.execute(toolPlan, context);
+  } catch (error) {
+    if (error instanceof UsageError) throw error;
+    return unavailableResult(
+      toolPlan,
+      redactSensitiveText(error instanceof Error ? error.message : String(error)),
+      "failed",
+    );
+  }
+}
+
 function unavailableResult(
   plan: ToolPlan,
   reason: string,
@@ -234,18 +251,34 @@ function unavailableResult(
       reason,
       logPath: null,
       findingCount: 0,
+      discardedDuringParse: 0,
     },
   };
 }
 
-async function createScanId(repoPath: string, date: Date): Promise<string> {
-  const result = await runCommand("git", ["rev-parse", "--short=8", "HEAD"], {
+function createScanId(date: Date, commit: string | null): string {
+  const revision = commit ? commit.slice(0, 8) : "nogit";
+  return `${date.toISOString().replace(/[:.]/g, "-")}-${revision}`;
+}
+
+export async function readRepositoryGit(repoPath: string): Promise<{
+  commit: string | null;
+  dirty: boolean | null;
+}> {
+  const commitResult = await runCommand("git", ["rev-parse", "HEAD"], {
     cwd: repoPath,
     timeoutMs: 10_000,
     env: allowedHostEnvironment(),
   }).catch(() => null);
-  const revision = result?.exitCode === 0 ? result.stdout.trim() : "nogit";
-  return `${date.toISOString().replace(/[:.]/g, "-")}-${revision || "nogit"}`;
+  const commit = commitResult?.exitCode === 0 ? commitResult.stdout.trim().toLowerCase() : "";
+  if (!/^[0-9a-f]{40}$/.test(commit)) return { commit: null, dirty: null };
+  const status = await runCommand("git", ["status", "--porcelain"], {
+    cwd: repoPath,
+    timeoutMs: 10_000,
+    env: allowedHostEnvironment(),
+  }).catch(() => null);
+  if (!status || status.exitCode !== 0) return { commit, dirty: null };
+  return { commit, dirty: status.stdout.trim().length > 0 };
 }
 
 async function mapConcurrent<T, R>(

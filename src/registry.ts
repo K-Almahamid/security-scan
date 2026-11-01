@@ -1,9 +1,9 @@
 import type { SecurityScanConfig } from "./config.js";
 import type { ComponentProfile, RepositoryProfile, ScanPlan, ToolPlan } from "./types.js";
 
-const KNOWN_ADAPTERS = new Set<ToolPlan["adapter"]>(["trivy", "semgrep", "dart-analyze"]);
+const KNOWN_ADAPTERS = new Set<ToolPlan["adapter"]>(["trivy", "semgrep", "dart-analyze", "gitleaks"]);
 
-export type CapabilityPrerequisite = "docker-compose" | "dart-sdk";
+export type CapabilityPrerequisite = "docker-compose" | "dart-sdk" | "gitleaks";
 
 export type CapabilityConfigKey = keyof SecurityScanConfig["tools"];
 
@@ -74,6 +74,7 @@ const STATIC_SUPPORTED_CHECKS = [
   "Docker, Compose, and supported configuration misconfiguration analysis",
   "Semgrep CE static analysis for supported source languages",
   "Dart analyzer checks for already-resolved workspaces",
+  "Optional Gitleaks history scan when explicitly enabled and the binary is already installed",
 ];
 
 const CAPABILITY_DEFINITIONS: CapabilityDefinition[] = [
@@ -154,6 +155,28 @@ const CAPABILITY_DEFINITIONS: CapabilityDefinition[] = [
       };
     },
   },
+  {
+    id: "gitleaks.history",
+    name: "Gitleaks git history",
+    purpose: "Optional secret scan of git history. It does not replace Trivy's working-tree secret scan.",
+    adapter: "gitleaks",
+    focus: "security",
+    configKey: "gitleaks",
+    scope: "repository",
+    prerequisites: ["gitleaks"],
+    requiredWhenScheduled: false,
+    isAutoApplicable: () => true,
+    isApplicable: () => true,
+    buildToolPlan: () => ({
+      id: "gitleaks-history",
+      adapter: "gitleaks",
+      componentId: null,
+      targetPath: ".",
+      required: false,
+      checks: ["git-history-secrets"],
+      reason: "Optional git history secret scan. Off unless tools.gitleaks.enabled is true or auto.",
+    }),
+  },
 ];
 
 let registryValidated = false;
@@ -167,21 +190,25 @@ export function getCapabilityById(id: string): CapabilityDefinition | undefined 
   return getCapabilityRegistry().find((capability) => capability.id === id);
 }
 
-export function assertValidCapabilityRegistry(): void {
-  if (registryValidated) return;
+export function findCapabilityRegistryError(
+  capabilities: readonly CapabilityDefinition[],
+): string | null {
   const ids = new Set<string>();
-  for (const capability of CAPABILITY_DEFINITIONS) {
-    if (ids.has(capability.id)) {
-      throw new Error(`Duplicate capability id: ${capability.id}`);
-    }
+  for (const capability of capabilities) {
+    if (ids.has(capability.id)) return `Duplicate capability id: ${capability.id}`;
     ids.add(capability.id);
     if (!KNOWN_ADAPTERS.has(capability.adapter)) {
-      throw new Error(`Capability ${capability.id} references unknown adapter: ${capability.adapter}`);
+      return `Capability ${capability.id} references unknown adapter: ${capability.adapter}`;
     }
-    if (!/^[a-z0-9][a-z0-9.-]*$/.test(capability.id)) {
-      throw new Error(`Invalid capability id: ${capability.id}`);
-    }
+    if (!/^[a-z0-9][a-z0-9.-]*$/.test(capability.id)) return `Invalid capability id: ${capability.id}`;
   }
+  return null;
+}
+
+export function assertValidCapabilityRegistry(): void {
+  if (registryValidated) return;
+  const error = findCapabilityRegistryError(CAPABILITY_DEFINITIONS);
+  if (error) throw new Error(error);
   registryValidated = true;
 }
 
@@ -307,6 +334,7 @@ export function evaluateCapabilityReadiness(input: {
   config: SecurityScanConfig;
   plan: ScanPlan;
   prerequisites: Partial<Record<CapabilityPrerequisite, boolean>>;
+  hostFallback?: Partial<Record<string, boolean>>;
 }): CapabilityReadiness[] {
   assertValidCapabilityRegistry();
   const results: CapabilityReadiness[] = [];
@@ -317,6 +345,7 @@ export function evaluateCapabilityReadiness(input: {
         readinessForCapability(capability, input.profile, input.config, undefined, {
           scheduled: input.plan.tools.some((tool) => tool.adapter === capability.adapter),
           prerequisites: input.prerequisites,
+          ...(input.hostFallback ? { hostFallback: input.hostFallback } : {}),
         }),
       );
       continue;
@@ -338,6 +367,7 @@ export function evaluateCapabilityReadiness(input: {
           prerequisites: input.prerequisites,
           planningState: planning.state,
           checkId: compositeId,
+          ...(input.hostFallback ? { hostFallback: input.hostFallback } : {}),
         },
       );
       results.push(readiness);
@@ -357,6 +387,7 @@ function readinessForCapability(
     prerequisites: Partial<Record<CapabilityPrerequisite, boolean>>;
     planningState?: CapabilityPlanningState;
     checkId?: string;
+    hostFallback?: Partial<Record<string, boolean>>;
   },
 ): CapabilityReadiness {
   const planning =
@@ -414,11 +445,24 @@ function readinessForCapability(
     };
   }
 
+  if (blocked === "docker-compose" && context.hostFallback?.[capability.adapter]) {
+    return {
+      capabilityId: checkId,
+      name: capability.name,
+      category,
+      status: "warn",
+      planningState: "scheduled",
+      message: `${capability.name}${componentLabel} will use the host binary because Docker Compose is unavailable. That run is not the pinned image.`,
+    };
+  }
+
   if (blocked) {
     const message =
       blocked === "docker-compose"
         ? `${capability.name}${componentLabel} requires Docker Compose, which is unavailable.`
-        : `${capability.name}${componentLabel} requires the Dart SDK on PATH, which is unavailable.`;
+        : blocked === "gitleaks"
+          ? `${capability.name}${componentLabel} requires the gitleaks binary on PATH. It is optional and is not downloaded.`
+          : `${capability.name}${componentLabel} requires the Dart SDK on PATH, which is unavailable.`;
     return {
       capabilityId: checkId,
       name: capability.name,

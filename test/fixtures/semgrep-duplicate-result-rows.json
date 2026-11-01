@@ -1,0 +1,39 @@
+{
+  "version": "1.143.1",
+  "results": [
+    {
+      "check_id": "javascript.lang.security.audit.detect-non-literal-regexp.detect-non-literal-regexp",
+      "path": "/src/scripts/example.mjs",
+      "start": { "line": 10, "col": 5, "offset": 100 },
+      "end": { "line": 10, "col": 20, "offset": 115 },
+      "extra": {
+        "message": "RegExp() called with a non-literal",
+        "severity": "WARNING",
+        "metadata": { "confidence": "LOW" }
+      }
+    },
+    {
+      "check_id": "javascript.lang.security.audit.detect-non-literal-regexp.detect-non-literal-regexp",
+      "path": "/src/scripts/example.mjs",
+      "start": { "line": 10, "col": 5, "offset": 100 },
+      "end": { "line": 10, "col": 20, "offset": 115 },
+      "extra": {
+        "message": "RegExp() called with a non-literal",
+        "severity": "WARNING",
+        "metadata": { "confidence": "LOW" }
+      }
+    },
+    {
+      "check_id": "javascript.lang.security.audit.detect-non-literal-regexp.detect-non-literal-regexp",
+      "path": "/src/scripts/other.mjs",
+      "start": { "line": 2, "col": 1, "offset": 0 },
+      "end": { "line": 2, "col": 10, "offset": 9 },
+      "extra": {
+        "message": "RegExp() called with a non-literal",
+        "severity": "WARNING",
+        "metadata": { "confidence": "LOW" }
+      }
+    }
+  ],
+  "errors": []
+}

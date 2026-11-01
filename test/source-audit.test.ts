@@ -5,7 +5,13 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, it } from "node:test";
 import { createFinding, validateFindings } from "../src/findings.js";
-import { attachSourceAuditToReport, commitReportFiles } from "../src/source-audit/attach.js";
+import {
+  attachSourceAuditToReport,
+  auditIdentitySidecarPath,
+  commitReportFiles,
+  parseAttestedAuditIdentity,
+  resolveAuditCommitBinding,
+} from "../src/source-audit/attach.js";
 import {
   importCloudflareFindings,
   parseCloudflareFindings,
@@ -324,6 +330,144 @@ describe("Cloudflare source-audit integration", () => {
     assert.equal(malformed.ok, false);
     assert.equal(malformed.exitCode, 3);
     assert.equal(await readFile(path.join(reportDir, "findings.json"), "utf8"), "[]\n");
+  });
+
+  it("binds an audit commit only when it matches a clean recorded scan", async () => {
+    const commit = "a".repeat(40);
+    const other = "b".repeat(40);
+    const legacy = resolveAuditCommitBinding({ git: undefined });
+    const unbound = resolveAuditCommitBinding({ git: { commit, dirty: false } });
+    const matchedBinding = resolveAuditCommitBinding({
+      git: { commit, dirty: false },
+      targetCommit: commit,
+    });
+    const mismatchBinding = resolveAuditCommitBinding({
+      git: { commit, dirty: false },
+      targetCommit: other,
+    });
+    const dirtyBinding = resolveAuditCommitBinding({
+      git: { commit, dirty: true },
+      targetCommit: commit,
+    });
+    const missingGit = resolveAuditCommitBinding({ git: undefined, targetCommit: commit });
+    assert.equal(legacy.ok && legacy.binding, "legacy-scan");
+    assert.equal(unbound.ok && unbound.binding, "unbound");
+    assert.equal(matchedBinding.ok && matchedBinding.binding, "matched");
+    assert.equal(mismatchBinding.ok, false);
+    assert.equal(dirtyBinding.ok, false);
+    assert.equal(missingGit.ok, false);
+    if (!mismatchBinding.ok) assert.match(mismatchBinding.message, /does not match/);
+    if (!dirtyBinding.ok) assert.match(dirtyBinding.message, /dirty worktree/);
+    if (!missingGit.ok) assert.match(missingGit.message, /did not record a Git commit/);
+
+    const repo = await mkdtemp(path.join(os.tmpdir(), "security-scan-commit-bind-"));
+    const reportDir = await copyMinimalScan(repo);
+    const manifest = JSON.parse(await readFile(path.join(reportDir, "scan-manifest.json"), "utf8")) as ScanManifest;
+    manifest.repositoryPath = await realpath(repo);
+    manifest.git = { commit, dirty: false };
+    await writeFile(path.join(reportDir, "scan-manifest.json"), `${JSON.stringify(manifest)}\n`);
+
+    const mismatch = await attachSourceAuditToReport({
+      repoPath: repo,
+      reportDirectory: reportDir,
+      sourceAuditFindingsPath: samplePath,
+      targetCommit: other,
+    });
+    assert.equal(mismatch.ok, false);
+    assert.equal(mismatch.exitCode, 3);
+    assert.equal(await readFile(path.join(reportDir, "findings.json"), "utf8"), "[]\n");
+
+    const matched = await attachSourceAuditToReport({
+      repoPath: repo,
+      reportDirectory: reportDir,
+      sourceAuditFindingsPath: samplePath,
+      targetCommit: commit,
+    });
+    assert.equal(matched.ok, true, matched.message);
+    const attached = JSON.parse(await readFile(path.join(reportDir, "scan-manifest.json"), "utf8")) as ScanManifest;
+    assert.equal(attached.sourceAudit?.commitBinding, "matched");
+    assert.equal(attached.sourceAudit?.targetCommit, commit);
+    const beforeRepeat = JSON.parse(await readFile(path.join(reportDir, "findings.json"), "utf8")) as unknown[];
+    const repeated = await attachSourceAuditToReport({
+      repoPath: repo,
+      reportDirectory: reportDir,
+      sourceAuditFindingsPath: samplePath,
+      targetCommit: commit,
+    });
+    assert.equal(repeated.ok, true, repeated.message);
+    const again = JSON.parse(await readFile(path.join(reportDir, "findings.json"), "utf8")) as unknown[];
+    assert.equal(again.length, beforeRepeat.length);
+    assert.equal(again.length, 2);
+    const repeatedManifest = JSON.parse(await readFile(path.join(reportDir, "scan-manifest.json"), "utf8")) as ScanManifest;
+    assert.equal(repeatedManifest.sourceAudit?.commitBinding, "matched");
+    assert.equal(repeatedManifest.sourceAudit?.commitIdentity?.agreement, "attested-matches-scan");
+    assert.match(repeatedManifest.sourceAudit?.note ?? "", /not proof the audit executed/);
+  });
+
+  it("treats an identity sidecar as agent-attested and rejects contradictions", async () => {
+    const commit = "c".repeat(40);
+    const other = "d".repeat(40);
+    assert.equal(auditIdentitySidecarPath("/tmp/findings.json"), "/tmp/findings.identity.json");
+    assert.throws(() => parseAttestedAuditIdentity({ version: 1, extra: true }), /Unknown audit identity field/);
+    assert.throws(() => parseAttestedAuditIdentity({ version: 2 }), /version must be 1/);
+    const dirty = resolveAuditCommitBinding({
+      git: { commit, dirty: false },
+      attested: { commit, dirty: true, repositoryPath: null },
+    });
+    assert.equal(dirty.ok, false);
+    const disagree = resolveAuditCommitBinding({
+      git: { commit, dirty: false },
+      targetCommit: commit,
+      attested: { commit: other, dirty: false, repositoryPath: null },
+    });
+    assert.equal(disagree.ok, false);
+
+    const repo = await mkdtemp(path.join(os.tmpdir(), "security-scan-identity-"));
+    const reportDir = await copyMinimalScan(repo);
+    const canonical = await realpath(repo);
+    const manifest = JSON.parse(await readFile(path.join(reportDir, "scan-manifest.json"), "utf8")) as ScanManifest;
+    manifest.repositoryPath = canonical;
+    manifest.git = { commit, dirty: false };
+    await writeFile(path.join(reportDir, "scan-manifest.json"), `${JSON.stringify(manifest)}\n`);
+    const findingsCopy = path.join(repo, "hunt.json");
+    await writeFile(findingsCopy, await readFile(samplePath, "utf8"));
+    await writeFile(
+      auditIdentitySidecarPath(findingsCopy),
+      `${JSON.stringify({ version: 1, repositoryPath: canonical, commit, dirty: false })}\n`,
+    );
+    const attached = await attachSourceAuditToReport({
+      repoPath: repo,
+      reportDirectory: reportDir,
+      sourceAuditFindingsPath: findingsCopy,
+    });
+    assert.equal(attached.ok, true, attached.message);
+    const saved = JSON.parse(await readFile(path.join(reportDir, "scan-manifest.json"), "utf8")) as ScanManifest;
+    assert.equal(saved.sourceAudit?.commitBinding, "matched");
+    assert.equal(saved.sourceAudit?.commitIdentity?.agreement, "attested-matches-scan");
+    assert.equal(saved.sourceAudit?.commitIdentity?.attested?.commit, commit);
+    const before = await readFile(path.join(reportDir, "findings.json"), "utf8");
+    await writeFile(
+      auditIdentitySidecarPath(findingsCopy),
+      `${JSON.stringify({ version: 1, commit: other, dirty: false, repositoryPath: canonical })}\n`,
+    );
+    const rejected = await attachSourceAuditToReport({
+      repoPath: repo,
+      reportDirectory: reportDir,
+      sourceAuditFindingsPath: findingsCopy,
+      targetCommit: commit,
+    });
+    assert.equal(rejected.ok, false);
+    assert.equal(rejected.exitCode, 3);
+    assert.equal(await readFile(path.join(reportDir, "findings.json"), "utf8"), before);
+    await writeFile(auditIdentitySidecarPath(findingsCopy), "{not-json\n");
+    const malformed = await attachSourceAuditToReport({
+      repoPath: repo,
+      reportDirectory: reportDir,
+      sourceAuditFindingsPath: findingsCopy,
+    });
+    assert.equal(malformed.ok, false);
+    assert.equal(malformed.exitCode, 3);
+    assert.equal(await readFile(path.join(reportDir, "findings.json"), "utf8"), before);
   });
 
   it("does not follow a report-directory symlink outside the repository", async () => {

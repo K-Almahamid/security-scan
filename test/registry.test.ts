@@ -21,6 +21,7 @@ const EXPECTED_CAPABILITY_IDS = [
   "trivy.repository",
   "semgrep.component",
   "dart-analyze.component",
+  "gitleaks.history",
 ];
 
 describe("capability registry", () => {

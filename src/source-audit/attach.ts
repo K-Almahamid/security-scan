@@ -1,9 +1,10 @@
-import { copyFile, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { copyFile, readFile, realpath, rename, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { UsageError, isEnoent } from "../errors.js";
 import { validateFindings } from "../findings.js";
 import { assertPathInsideRepository } from "../profile.js";
-import { findingCounts, renderMarkdownReport } from "../reports.js";
+import { buildAttachFindingSummary, findingCounts, renderMarkdownReport } from "../reports.js";
+import { readRepositoryGit } from "../scanner.js";
 import type { CanonicalFinding, ScanManifest, SourceAuditAttachment } from "../types.js";
 import { importCloudflareFindings, parseCloudflareFindings } from "./import.js";
 import { mergeDeterministicWithSourceAudit } from "./merge.js";
@@ -20,6 +21,188 @@ export interface AttachSourceAuditOptions {
   repoPath: string;
   reportDirectory: string;
   sourceAuditFindingsPath: string;
+  /** Full Git commit the audit claims to have reviewed. Omit to leave the attachment unbound. */
+  targetCommit?: string;
+}
+
+export type AuditCommitBinding = NonNullable<SourceAuditAttachment["commitBinding"]>;
+export type AuditCommitIdentity = NonNullable<SourceAuditAttachment["commitIdentity"]>;
+
+export interface AttestedAuditIdentity {
+  commit: string | null;
+  dirty: boolean | null;
+  repositoryPath: string | null;
+}
+
+const AUDIT_IDENTITY_KEYS = new Set(["version", "repositoryPath", "commit", "dirty"]);
+
+export function auditIdentitySidecarPath(findingsPath: string): string {
+  const parsed = path.parse(findingsPath);
+  if (parsed.ext.toLowerCase() !== ".json") return `${findingsPath}.identity.json`;
+  return path.join(parsed.dir, `${parsed.name}.identity.json`);
+}
+
+export function parseAttestedAuditIdentity(raw: unknown): AttestedAuditIdentity {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+    throw new UsageError("Audit identity sidecar must be a JSON object.");
+  }
+  const record = raw as Record<string, unknown>;
+  for (const key of Object.keys(record)) {
+    if (!AUDIT_IDENTITY_KEYS.has(key)) {
+      throw new UsageError(`Unknown audit identity field: ${key}`);
+    }
+  }
+  if (record.version !== 1) throw new UsageError("Audit identity version must be 1.");
+  let repositoryPath: string | null = null;
+  if (record.repositoryPath !== undefined && record.repositoryPath !== null) {
+    if (typeof record.repositoryPath !== "string" || !record.repositoryPath.trim()) {
+      throw new UsageError("Audit identity repositoryPath must be a non-empty path.");
+    }
+    repositoryPath = record.repositoryPath;
+  }
+  let commit: string | null = null;
+  if (record.commit !== undefined && record.commit !== null) {
+    if (typeof record.commit !== "string" || !/^[0-9a-f]{40}$/i.test(record.commit.trim())) {
+      throw new UsageError("Audit identity commit must be a full 40-character Git commit.");
+    }
+    commit = record.commit.trim().toLowerCase();
+  }
+  let dirty: boolean | null = null;
+  if (record.dirty !== undefined && record.dirty !== null) {
+    if (typeof record.dirty !== "boolean") throw new UsageError("Audit identity dirty must be a boolean.");
+    dirty = record.dirty;
+  }
+  return { commit, dirty, repositoryPath };
+}
+
+export async function loadAttestedAuditIdentity(
+  findingsPath: string,
+): Promise<AttestedAuditIdentity | null> {
+  const sidecar = auditIdentitySidecarPath(findingsPath);
+  let text: string;
+  try {
+    text = await readFile(sidecar, "utf8");
+  } catch (error) {
+    if (isEnoent(error)) return null;
+    throw error;
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(text) as unknown;
+  } catch {
+    throw new UsageError(`Audit identity sidecar is not valid JSON: ${path.basename(sidecar)}`);
+  }
+  return parseAttestedAuditIdentity(parsed);
+}
+
+export function resolveAuditCommitBinding(input: {
+  git: ScanManifest["git"];
+  targetCommit?: string | undefined;
+  attested?: AttestedAuditIdentity | null;
+  observed?: { commit: string | null; dirty: boolean | null } | null;
+  repositoryPath?: string;
+}):
+  | { ok: true; binding: AuditCommitBinding; targetCommit: string | null; identity: AuditCommitIdentity }
+  | { ok: false; message: string } {
+  const flag = normalizeDeclaredCommit(input.targetCommit);
+  if (flag === "invalid") {
+    return { ok: false, message: "--target-commit must be the full 40-character Git commit." };
+  }
+  const attestedCommit = input.attested?.commit ?? null;
+  if (flag && attestedCommit && flag !== attestedCommit) {
+    return {
+      ok: false,
+      message: `Audit identity commit ${attestedCommit} does not match --target-commit ${flag}.`,
+    };
+  }
+  if (input.attested?.repositoryPath && input.repositoryPath) {
+    const attestedPath = path.resolve(input.attested.repositoryPath);
+    const repoPath = path.resolve(input.repositoryPath);
+    if (attestedPath !== repoPath) {
+      return {
+        ok: false,
+        message: `Audit identity repository ${attestedPath} does not match --repo ${repoPath}.`,
+      };
+    }
+  }
+  if (
+    input.attested?.dirty != null &&
+    input.git?.dirty != null &&
+    input.attested.dirty !== input.git.dirty
+  ) {
+    return {
+      ok: false,
+      message: "Audit identity dirty state contradicts the dirty state recorded for this scan.",
+    };
+  }
+  const declared = flag ?? attestedCommit ?? "";
+  if (!declared) {
+    const binding: AuditCommitBinding = input.git ? "unbound" : "legacy-scan";
+    return { ok: true, binding, targetCommit: null, identity: commitIdentity(input, binding, null) };
+  }
+  if (!input.git?.commit) {
+    return {
+      ok: false,
+      message:
+        "This scan did not record a Git commit. Refusing to attach an audit that names a commit, because compatibility cannot be checked.",
+    };
+  }
+  if (input.git.commit.toLowerCase() !== declared) {
+    return {
+      ok: false,
+      message: `Audit commit ${declared} does not match the scanned commit ${input.git.commit}.`,
+    };
+  }
+  if (input.git.dirty !== false || input.attested?.dirty === true) {
+    return {
+      ok: false,
+      message:
+        input.git.dirty === true || input.attested?.dirty === true
+          ? `Scan commit ${input.git.commit} had a dirty worktree, so that commit does not identify the scanned tree.`
+          : `Dirty state for scan commit ${input.git.commit} was not recorded. Refusing to treat the audit commit as a match.`,
+    };
+  }
+  return {
+    ok: true,
+    binding: "matched",
+    targetCommit: declared,
+    identity: commitIdentity(input, "matched", declared),
+  };
+}
+
+function normalizeDeclaredCommit(value: string | undefined): string | null | "invalid" {
+  const trimmed = value?.trim().toLowerCase() ?? "";
+  if (!trimmed) return null;
+  return /^[0-9a-f]{40}$/.test(trimmed) ? trimmed : "invalid";
+}
+
+function commitIdentity(
+  input: {
+    git: ScanManifest["git"];
+    attested?: AttestedAuditIdentity | null;
+    observed?: { commit: string | null; dirty: boolean | null } | null;
+  },
+  binding: AuditCommitBinding,
+  declared: string | null,
+): AuditCommitIdentity {
+  const attested = input.attested || declared
+    ? {
+        commit: declared,
+        dirty: input.attested?.dirty ?? null,
+        repositoryPath: input.attested?.repositoryPath ?? null,
+      }
+    : null;
+  return {
+    attested,
+    scan: input.git ? { commit: input.git.commit, dirty: input.git.dirty } : null,
+    observed: input.observed ?? null,
+    agreement:
+      binding === "matched"
+        ? "attested-matches-scan"
+        : binding === "legacy-scan"
+          ? "legacy-unverified"
+          : "not-checked",
+  };
 }
 
 export interface AttachSourceAuditResult {
@@ -84,6 +267,33 @@ async function attachInsideRepository(
   if (manifest.repositoryPath !== repoPath) {
     throw new UsageError("Report repositoryPath does not match --repo");
   }
+  const attested = await loadAttestedAuditIdentity(options.sourceAuditFindingsPath);
+  if (attested?.repositoryPath) {
+    const attestedPath = path.isAbsolute(attested.repositoryPath)
+      ? path.resolve(attested.repositoryPath)
+      : path.resolve(repoPath, attested.repositoryPath);
+    let same = path.resolve(attestedPath) === path.resolve(repoPath);
+    try {
+      same = (await realpath(attestedPath)) === (await realpath(repoPath));
+    } catch {
+      same = path.resolve(attestedPath) === path.resolve(repoPath);
+    }
+    if (!same) {
+      throw new UsageError(
+        `Audit identity repository ${attestedPath} does not match --repo ${repoPath}.`,
+      );
+    }
+    attested.repositoryPath = repoPath;
+  }
+  const observed = await readRepositoryGit(repoPath);
+  const binding = resolveAuditCommitBinding({
+    git: manifest.git,
+    repositoryPath: repoPath,
+    attested,
+    observed,
+    ...(options.targetCommit ? { targetCommit: options.targetCommit } : {}),
+  });
+  if (!binding.ok) throw new UsageError(binding.message);
 
   const merged = mergeDeterministicWithSourceAudit(deterministic, imported.importable);
   validateFindings(merged);
@@ -99,11 +309,22 @@ async function attachInsideRepository(
     note:
       "Source-level audit is agentic and separate from deterministic scanner execution. " +
       "Rejected candidates are preserved in source-audit-records.json. " +
-      "Attachment does not execute repository code.",
+      "Attachment does not execute repository code. " +
+      commitBindingNote(binding.binding, binding.identity),
+    commitBinding: binding.binding,
+    targetCommit: binding.targetCommit,
+    commitIdentity: binding.identity,
   };
 
   manifest.sourceAudit = attachment;
   manifest.counts = findingCounts(merged);
+  manifest.findingSummary = buildAttachFindingSummary({
+    toolRuns: manifest.toolRuns,
+    priorSummary: manifest.findingSummary,
+    deterministicFindings: deterministic,
+    importableCount: imported.importable.length,
+    mergedFindings: merged,
+  });
   if (merged.length > 0 && manifest.overallStatus === "complete") {
     manifest.overallStatus = "complete_with_findings";
   }
@@ -164,6 +385,26 @@ async function updateWorkflowRunAfterAttach(
     next.cloudflare.attached = true;
     return next;
   });
+}
+
+function commitBindingNote(binding: AuditCommitBinding, identity: AuditCommitIdentity): string {
+  const divergence =
+    identity.observed?.commit &&
+    identity.scan?.commit &&
+    identity.observed.commit !== identity.scan.commit
+      ? " HEAD at attach time differs from the scanned commit. That later movement is recorded and is not the audit identity."
+      : "";
+  if (binding === "matched") {
+    return (
+      "Agent-attested commit matches the clean Git commit the CLI recorded for this scan. " +
+      "The CLI did not run the hunt, so this is not proof the audit executed." +
+      divergence
+    );
+  }
+  if (binding === "legacy-scan") {
+    return "This scan manifest has no Git identity. Attachment does not claim a verified commit match." + divergence;
+  }
+  return "The audit did not attest a commit. Attachment does not claim the hunt reviewed this scan's revision." + divergence;
 }
 
 export async function commitReportFiles(

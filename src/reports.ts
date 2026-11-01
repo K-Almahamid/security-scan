@@ -3,6 +3,7 @@ import path from "node:path";
 import { validateFindings } from "./findings.js";
 import type {
   CanonicalFinding,
+  FindingSummary,
   OverallStatus,
   RepositoryProfile,
   ScanManifest,
@@ -27,6 +28,87 @@ export function findingCounts(findings: CanonicalFinding[]): Record<Severity, nu
       findings.filter((finding) => finding.severity === severity).length,
     ]),
   ) as Record<Severity, number>;
+}
+
+function sumToolFindingCounts(toolRuns: ToolRun[]): number {
+  return toolRuns.reduce((total, run) => total + run.findingCount, 0);
+}
+
+function sumRecordedParseDiscards(toolRuns: ToolRun[]): number | null {
+  if (toolRuns.length === 0) return 0;
+  if (toolRuns.some((run) => run.discardedDuringParse === undefined)) return null;
+  return toolRuns.reduce((total, run) => total + (run.discardedDuringParse ?? 0), 0);
+}
+
+export function buildScanFindingSummary(input: {
+  toolRuns: ToolRun[];
+  collectedFindings: CanonicalFinding[];
+  normalizedFindings: CanonicalFinding[];
+}): FindingSummary {
+  const perTool = input.toolRuns.map((run) => ({
+    id: run.id,
+    adapter: run.adapter,
+    findingCount: run.findingCount,
+    ...(run.discardedDuringParse !== undefined
+      ? { discardedDuringParse: run.discardedDuringParse }
+      : {}),
+  }));
+  const accepted = sumToolFindingCounts(input.toolRuns);
+  const discardedDuringParse = input.toolRuns.reduce(
+    (total, run) => total + (run.discardedDuringParse ?? 0),
+    0,
+  );
+  const preDedupeCollected = input.collectedFindings.length;
+  const normalizedUnique = input.normalizedFindings.length;
+  const duplicatesRemoved = Math.max(0, preDedupeCollected - normalizedUnique);
+  return {
+    perTool,
+    rawToolFindingsTotal: accepted + (discardedDuringParse ?? 0),
+    preDedupeCollected,
+    normalizedUnique,
+    duplicatesRemoved,
+    discardedDuringParse,
+  };
+}
+
+/** Recompute summary after source-audit attach without losing scan-time dedupe accounting. */
+export function buildAttachFindingSummary(input: {
+  toolRuns: ToolRun[];
+  priorSummary: FindingSummary | undefined;
+  deterministicFindings: CanonicalFinding[];
+  importableCount: number;
+  mergedFindings: CanonicalFinding[];
+}): FindingSummary {
+  const accepted = sumToolFindingCounts(input.toolRuns);
+  const scanPreDedupe = Math.max(
+    input.priorSummary?.preDedupeCollected ?? accepted,
+    accepted,
+  );
+  const duplicatesRemovedInScan = Math.max(
+    0,
+    scanPreDedupe - input.deterministicFindings.length,
+  );
+  const discardedDuringParse = input.priorSummary
+    ? input.priorSummary.discardedDuringParse
+    : sumRecordedParseDiscards(input.toolRuns);
+  const mergeInput = input.deterministicFindings.length + input.importableCount;
+  const duplicatesRemovedInMerge = Math.max(0, mergeInput - input.mergedFindings.length);
+  const perTool = input.toolRuns.map((run) => ({
+    id: run.id,
+    adapter: run.adapter,
+    findingCount: run.findingCount,
+    ...(run.discardedDuringParse !== undefined
+      ? { discardedDuringParse: run.discardedDuringParse }
+      : {}),
+  }));
+  return {
+    perTool,
+    rawToolFindingsTotal: accepted + (discardedDuringParse ?? 0),
+    preDedupeCollected: scanPreDedupe + input.importableCount,
+    normalizedUnique: input.mergedFindings.length,
+    duplicatesRemoved: duplicatesRemovedInScan + duplicatesRemovedInMerge,
+    discardedDuringParse,
+  };
 }
 
 export function executionSummary(toolRuns: ToolRun[]): ScanManifest["execution"] {
@@ -93,6 +175,7 @@ export async function writeReports(input: {
         renderMarkdownReport(input.manifest, input.findings),
         { mode: 0o600 },
       ),
+      writeJson(path.join(staging, "findings.sarif.json"), canonicalFindingsToSarif(input.findings)),
     ];
     if (input.workflowRun) {
       writes.push(
@@ -128,6 +211,7 @@ export function renderMarkdownReport(
     `- Planned scan coverage: **${manifest.coverage.plannedStatus}**`,
     "- Comprehensive security coverage: **No**",
     `- Repository: \`${escapeInline(manifest.repositoryPath)}\``,
+    `- Git: ${gitIdentityLine(manifest)}`,
     `- Started: ${manifest.startedAt}`,
     `- Completed: ${manifest.completedAt}`,
     "",
@@ -137,6 +221,10 @@ export function renderMarkdownReport(
       ? "No normalized findings were reported by completed scanners. This is not a guarantee that the repository is secure."
       : `${findings.length} normalized finding(s) were reported. Prioritize critical and high severity items, then validate potential findings before remediation.`,
     "",
+    "## Finding counts",
+    "",
+    ...findingCountLines(manifest, findings.length),
+    "",
     "## Scanner layers",
     "",
     "| Layer | Execution |",
@@ -144,6 +232,7 @@ export function renderMarkdownReport(
     layerRow(manifest, "trivy", "Trivy"),
     layerRow(manifest, "semgrep", "Semgrep CE"),
     layerRow(manifest, "dart-analyze", "Dart analyzer"),
+    layerRow(manifest, "gitleaks", "Gitleaks history"),
     cloudflareRow(manifest),
     "",
     "Trivy, Semgrep, and the Dart analyzer are deterministic CLI adapters. The Cloudflare source audit is a separate agent workflow. This CLI does not launch it. `not executed` means no validated audit was attached.",
@@ -291,6 +380,9 @@ export function renderMarkdownReport(
       `- Confirmed: ${manifest.sourceAudit.counts.confirmed}`,
       `- Needs validation: ${manifest.sourceAudit.counts.needs_validation}`,
       `- Rejected: ${manifest.sourceAudit.counts.rejected}`,
+      `- Commit binding: ${manifest.sourceAudit.commitBinding ?? "not recorded"}`,
+      `- Declared audit commit: ${manifest.sourceAudit.targetCommit ?? "none"}`,
+      `- Commit identity: ${manifest.sourceAudit.commitIdentity?.agreement ?? "not recorded"} (agent-attested when present; not proof the hunt ran)`,
       "",
       manifest.sourceAudit.note,
       "",
@@ -310,6 +402,102 @@ export function renderMarkdownReport(
     "",
   );
   return `${lines.join("\n")}\n`;
+}
+
+function findingCountLines(manifest: ScanManifest, normalizedCount: number): string[] {
+  const summary = manifest.findingSummary;
+  if (!summary) {
+    const raw = manifest.toolRuns.reduce((total, run) => total + run.findingCount, 0);
+    return [
+      `- Per-tool raw findings (sum of tool runs): **${raw}**`,
+      `- Normalized unique findings in this report: **${normalizedCount}**`,
+      "",
+      "Older manifests may omit `findingSummary`; use `toolRuns[].findingCount` and `findings.json` length.",
+    ];
+  }
+  return [
+    "- Per-tool raw findings (adapter layer, before global deduplication):",
+    "",
+    "| Tool run | Adapter | Raw findings |",
+    "|---|---|---:|",
+    ...summary.perTool.map(
+      (entry) =>
+        `| ${escapeCell(entry.id)} | ${escapeCell(entry.adapter)} | ${entry.findingCount} |`,
+    ),
+    "",
+    `- **Total raw tool findings:** ${summary.rawToolFindingsTotal}`,
+    `- **Collected before deduplication:** ${summary.preDedupeCollected}`,
+    `- **Discarded during parse (malformed rows):** ${
+      summary.discardedDuringParse === null
+        ? "not recorded (legacy manifest; this is not a claim that every raw row was valid)"
+        : String(summary.discardedDuringParse)
+    }`,
+    `- **Duplicates removed:** ${summary.duplicatesRemoved}`,
+    `- **Normalized unique findings:** ${summary.normalizedUnique}`,
+    "",
+    "`manifest.counts` reflects severity buckets for normalized unique findings only.",
+  ];
+}
+
+const sarifLevel: Record<Severity, "error" | "warning" | "note" | "none"> = {
+  critical: "error",
+  high: "error",
+  medium: "warning",
+  low: "note",
+  info: "note",
+  unknown: "none",
+};
+
+/** SARIF 2.1.0 export. Canonical JSON remains the source of truth. */
+export function canonicalFindingsToSarif(findings: CanonicalFinding[]): {
+  version: "2.1.0";
+  runs: Array<{
+    tool: { driver: { name: string; rules: Array<{ id: string; shortDescription: { text: string } }> } };
+    results: Array<{
+      ruleId: string;
+      level: "error" | "warning" | "note" | "none";
+      message: { text: string };
+      locations: Array<{ physicalLocation: { artifactLocation: { uri: string } } }>;
+      partialFingerprints: { primary: string };
+    }>;
+  }>;
+} {
+  const rules = new Map<string, { id: string; shortDescription: { text: string } }>();
+  const results = findings.map((finding) => {
+    const ruleId = finding.evidence.ruleId || finding.sources[0]?.ruleId || finding.id;
+    if (!rules.has(ruleId)) rules.set(ruleId, { id: ruleId, shortDescription: { text: finding.title } });
+    const uri = finding.location.path ?? "";
+    return {
+      ruleId,
+      level: sarifLevel[finding.severity],
+      message: {
+        text: finding.evidence.kind === "redacted" ? `${finding.title} Evidence was redacted.` : finding.title,
+      },
+      locations: [{ physicalLocation: { artifactLocation: { uri } } }],
+      partialFingerprints: { primary: finding.fingerprint },
+    };
+  });
+  return {
+    version: "2.1.0",
+    runs: [
+      {
+        tool: { driver: { name: "security-scan", rules: [...rules.values()] } },
+        results,
+      },
+    ],
+  };
+}
+
+function gitIdentityLine(manifest: ScanManifest): string {
+  if (!manifest.git) return "not recorded (legacy manifest)";
+  if (!manifest.git.commit) return "unavailable";
+  const dirty =
+    manifest.git.dirty === true
+      ? "dirty worktree"
+      : manifest.git.dirty === false
+        ? "clean worktree"
+        : "dirty state unknown";
+  return `\`${escapeInline(manifest.git.commit)}\` (${dirty})`;
 }
 
 function layerRow(manifest: ScanManifest, adapter: string, label: string): string {

@@ -56,7 +56,7 @@ Cursor does not automatically invoke other Skills or MCP servers. You must read 
 
    ```bash
    security-scan audit validate --repo "<absolute-repository-path>" --findings "<path>"
-   security-scan audit attach --repo "<absolute-repository-path>" --scan-dir "<report-dir>" --findings "<path>"
+   security-scan audit attach --repo "<absolute-repository-path>" --scan-dir "<report-dir>" --findings "<path>" [--target-commit "<full-sha>"]
    ```
 
    Failed validation or attach leaves the combined audit **incomplete** while preserving the deterministic scan.
@@ -112,6 +112,10 @@ Attachment ≠ invocation. Attachment ≠ phase completion. Zero normalized find
 - Never interpret failed, skipped, or unsupported checks as passing.
 - Never describe coverage as comprehensive.
 - Semgrep exit `1` with valid JSON is a completed finding run, not a scanner failure.
+- Semgrep `PartialParsing` keeps parsed findings, marks that tool failed, and leaves the scan incomplete (exit `2`). A failed document contributes no findings from that tool. A skipped optional tool, including host `dart analyze` when analyzer plugins are declared, does not by itself fail the scan.
+- Do not pass `--allow-dart-plugins` unless the user explicitly accepts host execution of project analyzer plugins, including plugins pulled in through `include:`. Target configuration cannot enable that. If the include chain cannot be verified, the CLI skips host analysis unless that flag is set.
+- When `scan-manifest.json` has `git.commit` and `git.dirty` is false, pass that full commit to `audit attach --target-commit`. You may also write `findings.identity.json` beside the findings file with `version: 1`, `repositoryPath`, `commit`, and `dirty`. That file is agent-attested. `matched` means the attestation equals the clean commit the CLI recorded. It is not proof the hunt ran. If `git` is absent, or `git.dirty` is not false, omit the commit and say the binding is legacy or unbound.
+- A new scanner is a `ToolAdapter` plus a capability entry in `src/registry.ts`. The orchestrator dispatches by adapter id and does not grow a tool-specific branch. A new audit skill is separate: discovery, invocation, completion, validation, and attachment are different claims. The Cloudflare skill is validated and attached. It is not launched by the CLI, and other skills do not share its phase list.
 - Never run installs, builds, or application servers as part of the deterministic scan.
 - Never auto-remediate or modify application code.
 - Do not print raw secret evidence.

@@ -182,6 +182,7 @@ async function main(argv: string[]): Promise<number> {
         repoPath: repo,
         reportDirectory,
         sourceAuditFindingsPath: auditOptions.findings,
+        ...(auditOptions.targetCommit ? { targetCommit: auditOptions.targetCommit } : {}),
       });
       if (!result.ok) {
         console.error(result.message);
@@ -235,6 +236,7 @@ async function main(argv: string[]): Promise<number> {
       ...(options.timeout ? { timeoutMs: parseDuration(options.timeout) } : {}),
       ...(options.keepRaw ? { keepRaw: true } : {}),
       ...(options.failOn ? { failOn: options.failOn as Exclude<Severity, "unknown"> } : {}),
+      ...(options.allowDartPlugins ? { allowDartPlugins: true } : {}),
       workflowRequest: parseWorkflowRequest(options.workflow),
     });
     console.log(
@@ -268,6 +270,7 @@ interface ParsedArgs {
   keepRaw?: boolean;
   failOn?: string;
   json?: boolean;
+  allowDartPlugins?: boolean;
 }
 
 function parseArgs(args: string[]): ParsedArgs {
@@ -290,6 +293,10 @@ function parseArgs(args: string[]): ParsedArgs {
     }
     if (arg === "--keep-raw") {
       parsed.keepRaw = true;
+      continue;
+    }
+    if (arg === "--allow-dart-plugins") {
+      parsed.allowDartPlugins = true;
       continue;
     }
     if (arg === "--json") {
@@ -335,6 +342,7 @@ Usage:
   security-scan scan --repo <path> [--mode standard]
     [--workflow full|deterministic-only] [--config <path>] [--reports-dir <path>]
     [--offline] [--jobs <n>] [--timeout <20m>] [--keep-raw] [--fail-on <severity>]
+    [--allow-dart-plugins]
   security-scan workflow assess --repo <path> --scan-dir <report-dir>
     [--workflow full|deterministic-only] [--json]
   security-scan workflow register-cloudflare --repo <path> --scan-dir <report-dir>
@@ -348,6 +356,7 @@ Source-level audit (validation and import only; the Cursor skill runs the Cloudf
   security-scan audit validate --repo <path> --findings <cloudflare-findings.json>
   security-scan audit import --repo <path> --findings <cloudflare-findings.json>
   security-scan audit attach --repo <path> --scan-dir <report-dir> --findings <cloudflare-findings.json>
+    [--target-commit <full-git-sha>]
 
 Exit codes:
   doctor: 0 ready, 1 full-audit optional gaps, 2 deterministic prerequisites missing
@@ -507,6 +516,7 @@ interface ParsedAuditArgs {
   repo?: string;
   findings?: string;
   scanDir?: string;
+  targetCommit?: string;
 }
 
 function parseAuditArgs(args: string[]): ParsedAuditArgs {
@@ -531,6 +541,13 @@ function parseAuditArgs(args: string[]): ParsedAuditArgs {
       const value = args[index + 1];
       if (!value || value.startsWith("--")) throw new CliError("Missing value for --scan-dir", 3);
       parsed.scanDir = value;
+      index += 1;
+      continue;
+    }
+    if (arg === "--target-commit") {
+      const value = args[index + 1];
+      if (!value || value.startsWith("--")) throw new CliError("Missing value for --target-commit", 3);
+      parsed.targetCommit = value;
       index += 1;
       continue;
     }

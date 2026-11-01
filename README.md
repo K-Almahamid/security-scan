@@ -61,11 +61,12 @@ its own status and exit code.
 ## Requirements
 
 - Node.js 20 or newer (the CLI is built from this repository)
-- Docker with Compose v2 (`docker compose version` must succeed)
+- Docker with Compose v2 (`docker compose version` must succeed) for the pinned Trivy and Semgrep images
+- Optional: `trivy` and `semgrep` already on `PATH` are used only when Docker Compose is unavailable. The report says those runs are not the pinned images. The CLI does not download binaries.
 - Optional: a Dart SDK on `PATH` when you want `dart analyze`
+- Optional: `gitleaks` already on `PATH`, and `tools.gitleaks.enabled` set to `true` or `"auto"`, for a git-history secret scan. It is off by default and is not downloaded.
 
-The verification workflow runs on Ubuntu with Node.js 22. This repository does
-not publish platform-specific binaries.
+The verification workflow runs on Ubuntu with Node.js 22. Windows is not covered by CI. This repository does not publish platform-specific binaries. macOS and Linux are the expected hosts.
 
 Trivy and Semgrep images are pinned in
 [compose/security-scan.compose.yml](compose/security-scan.compose.yml). The
@@ -74,8 +75,7 @@ first scan needs network access to pull those images and, unless you pass
 
 ## Quick start
 
-This package is `"private": true` and is not published to npm. The package name
-is `@local/security-scan`. Do not use `npx security-scan`.
+The npm package name is `security-scan-cli` because `security-scan` is already taken. This repository is not published yet. Do not use `npx security-scan`. Install from a clone:
 
 Clone the repository, install its dependencies, build `dist/cli.js`, and link
 that local binary onto your `PATH`. The Cursor skill expects a `security-scan`
@@ -130,6 +130,19 @@ network smoke test.
 
 Individual scripts are `npm test`, `npm run test:cloudflare-validators`,
 `npm run typecheck`, `npm run lint`, and `npm run build`.
+
+### Adding a deterministic scanner
+
+New tools integrate through two focused surfaces:
+
+1. **`src/registry.ts`** — declare a capability (applicability, prerequisites,
+   config key, and how it maps to `ToolPlan` rows).
+2. **`src/adapters.ts`** — implement `ToolAdapter` (prerequisites, execute,
+   normalize output to canonical findings, set `ToolRun` status honestly).
+
+`src/scanner.ts` runs the plan concurrently; it should not need changes for a
+new adapter. Cloudflare source audit remains a separate agent workflow
+(`audit validate` / `audit attach`), not a `ToolAdapter`.
 
 ## Cursor Skills
 
@@ -259,7 +272,7 @@ security-scan workflow register-cloudflare --repo /absolute/path/to/repository -
 
 security-scan audit validate --repo /absolute/path/to/repository --findings /path/to/findings.json
 security-scan audit import --repo /absolute/path/to/repository --findings /path/to/findings.json
-security-scan audit attach --repo /absolute/path/to/repository --scan-dir security-reports/<scan-id> --findings /path/to/findings.json
+security-scan audit attach --repo /absolute/path/to/repository --scan-dir security-reports/<scan-id> --findings /path/to/findings.json [--target-commit <full-sha>]
 ```
 
 `profile` prints `{ profile, plan }` as JSON. `--json` is accepted and does not
@@ -334,15 +347,16 @@ separately.
 --timeout <20m>         Per-adapter timeout (default 20m; also 30s, 5000ms, or milliseconds)
 --keep-raw              Copy redacted raw output into the report directory
 --fail-on <severity>    Finding threshold for exit code 1
+--allow-dart-plugins    Run host dart analyze even when analyzer plugins are declared
 ```
 
 `--fail-on` is `critical`, `high`, `medium`, `low`, or `info`. The default is
 `high`.
 
 `--offline` passes `--skip-db-update` and `--offline-scan` to Trivy. Semgrep
-does not load `p/default` or `p/security-audit` in offline mode. A Semgrep
-adapter that is not using the bundled Flutter rules fails its prerequisite with
-"Semgrep registry rules are unavailable in offline mode".
+does not load `p/default` or `p/security-audit` in offline mode. It still runs
+the bundled rules in `rules/semgrep` and records that registry packs were not
+loaded. Offline mode is not network-free coverage of the Semgrep registry.
 
 ### Exit codes
 
@@ -354,16 +368,42 @@ adapter that is not using the bundled Flutter rules fails its prerequisite with
 
 Semgrep's process exit code `1` means the tool found results. Security Scan
 treats that, together with a valid results document, as a completed tool run.
-It does not treat it as a scanner failure. Exit codes `2` and above, a timeout,
-or a JSON document that is not the scanner's result document fail the tool. A
-failed tool does not contribute findings and cannot make the scan exit `0`.
+It does not treat it as a scanner failure.
+
+Tool outcomes are separate from the scan exit code:
+
+- **Successful tool run** (`passed` or `findings`): the scanner finished and its
+  document was usable. Findings, when present, are normalized. The scan can
+  exit `0` or `1`.
+- **Partial Semgrep run**: Semgrep returned a valid `results` array plus
+  non-blocking errors such as `PartialParsing`. Parsed findings are kept. The
+  tool run is `failed`, the scan is `incomplete`, and the exit code is `2`.
+- **Failed tool run**: timeout, truncated output, unusable JSON, a blocking
+  scanner error, or an unexpected exit code. That tool contributes no findings.
+  Findings from other completed tools are kept. A required failure keeps the
+  scan `incomplete` and the exit code `2`. The scan cannot exit `0`.
+- **Skipped tool run**: an optional check did not run, for example `dart analyze`
+  without a resolved workspace, without a Dart SDK, or with analyzer plugins
+  and no `--allow-dart-plugins`. A skip does not by itself fail the scan.
 
 `policy.allowFailedTools` must be `false`. Setting it to `true` is a
 configuration error. Incomplete execution is never reported as a successful
 scan.
 
-`audit attach` exits `0` after a successful attachment. Validation and scope
-failures still use `3` (or `4` for an unexpected orchestration error).
+`audit attach` exits `0` after a successful attachment. Validation, scope, and
+commit-binding failures still use `3` (or `4` for an unexpected orchestration
+error).
+
+`--target-commit` is optional. Pass the full 40-character commit the audit
+reviewed. Attachment records one of three bindings and never invents a match:
+
+- `matched` — an agent-attested commit equals `manifest.git.commit` and the scan worktree was clean. This compares attestation with the CLI scan record. It is not proof the hunt ran.
+- `unbound` — no commit was attested. The manifest records that the audit commit was not checked.
+- `legacy-scan` — the manifest has no `git` object, and no commit was attested. Older reports stay attachable, and the result does not claim they match a commit.
+
+An optional sidecar next to the findings file, `findings.identity.json` when the findings file is `findings.json`, may attest `version`, `repositoryPath`, `commit`, and `dirty`. A missing sidecar is not an attestation. A malformed sidecar fails the attach. Contradictions between the sidecar, `--target-commit`, and the scan record are rejected. A later HEAD move is recorded as observed identity and does not by itself fail the attach.
+
+A different commit, a dirty or unknown worktree, a short hash, or `--target-commit` on a manifest that did not record Git identity fails the attach and leaves the report unchanged.
 
 ## Configuration
 
@@ -499,7 +539,30 @@ exact duplicates. Rejected source-audit candidates never enter `findings.json`;
 their counts appear under `manifest.sourceAudit.counts.rejected`.
 
 `manifest.counts` always reflects the current `findings.json`, not the sum of
-`toolRuns[].findingCount`. A failed required scanner still leaves
+`toolRuns[].findingCount`. New scans also record `manifest.findingSummary`:
+
+- `rawToolFindingsTotal` — result rows the parsers examined (accepted plus rejected).
+- `preDedupeCollected` — canonical findings before global deduplication.
+- `discardedDuringParse` — rows rejected as malformed. This is a parser count, not `raw - preDedupe`.
+- `duplicatesRemoved` — rows removed by deduplication.
+- `normalizedUnique` — rows in `findings.json`.
+
+`report.md` includes a **Finding counts** section with the same breakdown.
+`audit attach` preserves scan-time `preDedupeCollected`, `discardedDuringParse`,
+and dedupe totals. A legacy manifest that never recorded parse rejects gets
+`discardedDuringParse: null`. That means "not recorded", not "zero malformed rows".
+
+Semgrep **PartialParsing** warnings (for example JSX `href` values containing
+`&limit=`) mean Semgrep could not fully parse some files. The adapter still
+imports findings from the JSON `results` array, counts any individual result
+rows it cannot normalize, marks the tool run **failed**, and leaves the scan
+**incomplete**. That is a Semgrep parser limitation on some valid TSX, not a
+signal to change the target repository from the orchestrator. Malformed result
+objects are omitted from `findings.json` and counted in `discardedDuringParse`.
+A blocking Semgrep error or a document that is not Semgrep JSON still drops
+that tool's findings.
+
+A failed required scanner still leaves
 `overallStatus` as `incomplete`; attach does not upgrade `incomplete` to
 `complete` or `complete_with_findings`.
 
@@ -519,8 +582,23 @@ check against the publisher (`publisherVerification` is `not_performed`).
 - Scanner containers receive no Docker socket and are not privileged.
 - Capabilities are dropped and `no-new-privileges` is set.
 - Tool images are pinned by version and digest.
-- `dart analyze` runs only when `.dart_tool/package_config.json` already exists.
-  The scanner never runs `dart pub get`, Flutter builds, or build runners.
+- `dart analyze` runs on the host, not in the scanner container. It runs only
+  when `.dart_tool/package_config.json` already exists. The scanner never runs
+  `dart pub get`, Flutter builds, or build runners.
+- Host `dart analyze` loads analyzer plugins declared in the nearest
+  `analysis_options.yaml`, including a resolvable `include:` chain. Those plugins
+  are project code and run as the user who launched the CLI. By default the scan
+  skips Dart analysis when plugins are declared or when the include chain cannot
+  be verified (missing file, unsupported shape, package escape, or depth limit).
+  A cycle that was already read is not itself a plugin. `--allow-dart-plugins`
+  is the only opt-in. A target `.security-scan.json` cannot turn this on.
+  Trivy and Semgrep stay in pinned containers when Docker Compose is available.
+- Each scan's raw cache under `~/.cache/security-scan/<repo>/<scan-id>` is removed
+  after the report is written. `--keep-raw` copies redacted raw output into the
+  report first. Historical reports are not deleted. The Trivy database cache is kept.
+- `findings.sarif.json` is a SARIF 2.1.0 view of the canonical findings. `findings.json` stays the source of truth.
+- New manifests record `git.commit` (full HEAD) and `git.dirty`. A missing `git`
+  object means the report predates that field.
 
 Standard mode accepts no remote target. Future ZAP or Strix adapters would need
 a separate authorization and scope gate. They are not implemented. Source-audit

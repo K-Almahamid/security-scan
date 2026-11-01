@@ -227,7 +227,7 @@ describe("orchestration failure and scope contracts", () => {
     assert.equal(badJobs.status, 3);
     const version = runCli(["version"]);
     assert.equal(version.status, 0);
-    assert.match(version.stdout, /0\.4\.0/);
+    assert.match(version.stdout, /0\.5\.0/);
     const fileTarget = runCli(["profile", "--repo", path.join(projectRoot, "package.json")]);
     assert.equal(fileTarget.status, 3);
   });

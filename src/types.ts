@@ -38,7 +38,7 @@ export interface RepositoryProfile {
 
 export interface ToolPlan {
   id: string;
-  adapter: "trivy" | "semgrep" | "dart-analyze";
+  adapter: "trivy" | "semgrep" | "dart-analyze" | "gitleaks";
   componentId: string | null;
   targetPath: string;
   required: boolean;
@@ -133,7 +133,10 @@ export interface ToolRun {
   version: string | null;
   reason: string | null;
   logPath: string | null;
+  /** Canonical findings produced by the adapter. Malformed raw rows are not included. */
   findingCount: number;
+  /** Raw result rows the parser rejected. Omitted on manifests written before this field existed. */
+  discardedDuringParse?: number;
 }
 
 export interface SourceAuditAttachment {
@@ -145,6 +148,58 @@ export interface SourceAuditAttachment {
   orchestration: "cursor-agent";
   counts: Record<AuditVerdict, number>;
   note: string;
+  /**
+   * `matched` — agent-attested commit equals the clean commit the CLI recorded.
+   * This is not proof the hunt ran.
+   * `unbound` — the audit did not name a commit.
+   * `legacy-scan` — the manifest has no `git` record. Compatibility was not checked.
+   */
+  commitBinding?: "matched" | "unbound" | "legacy-scan";
+  /** Agent-attested commit, when one was supplied. Null when the audit did not name one. */
+  targetCommit?: string | null;
+  /**
+   * Scan identity was recorded by the CLI. Attested identity is self-reported.
+   * `attested-matches-scan` only means those commits agree. It does not prove execution.
+   */
+  commitIdentity?: {
+    attested: {
+      commit: string | null;
+      dirty: boolean | null;
+      repositoryPath: string | null;
+    } | null;
+    scan: { commit: string | null; dirty: boolean | null } | null;
+    observed: { commit: string | null; dirty: boolean | null } | null;
+    agreement: "not-checked" | "attested-matches-scan" | "legacy-unverified";
+  };
+}
+
+/** Per-tool raw counts vs globally normalized findings (deterministic scan and after attach). */
+export interface FindingSummary {
+  perTool: Array<{
+    id: string;
+    adapter: string;
+    findingCount: number;
+    discardedDuringParse?: number;
+  }>;
+  /**
+   * Raw result rows the adapters examined: accepted findings plus rows rejected by the parser.
+   * When `discardedDuringParse` is null, this is only the sum of `toolRuns[].findingCount`.
+   */
+  rawToolFindingsTotal: number;
+  /**
+   * Adapter-collected rows immediately before the scan's global `deduplicateFindings`.
+   * Preserved across `audit attach` (does not shrink to post-dedupe `findings.json` length).
+   */
+  preDedupeCollected: number;
+  /** Rows in `findings.json` after deduplication for this report snapshot. */
+  normalizedUnique: number;
+  /** Duplicate rows removed by deduplication (not parse rejects). */
+  duplicatesRemoved: number;
+  /**
+   * Raw rows rejected by a parser. Null means this manifest did not record parse rejects
+   * (legacy scan). It is not a claim that every raw row was valid.
+   */
+  discardedDuringParse: number | null;
 }
 
 export interface ScanManifest {
@@ -175,6 +230,15 @@ export interface ScanManifest {
   /** @deprecated Read coverage.unsupported. Retained for v1 consumers. */
   coverageGaps: string[];
   counts: Record<Severity, number>;
+  findingSummary?: FindingSummary;
+  /**
+   * Git identity of the target at scan time. Absent on manifests written before this field.
+   * `commit` null means Git did not provide a HEAD. `dirty` null means status could not be read.
+   */
+  git?: {
+    commit: string | null;
+    dirty: boolean | null;
+  };
   rawArtifactsPath: string;
   reportDirectory: string;
   sourceAudit?: SourceAuditAttachment | undefined;
@@ -187,6 +251,11 @@ export interface AdapterContext {
   offline: boolean;
   timeoutMs: number;
   exclude: string[];
+  /**
+   * When omitted or false, host `dart analyze` is skipped if the project declares analyzer plugins.
+   * Only the operator's CLI flag sets this. Target configuration cannot.
+   */
+  allowDartPlugins?: boolean;
 }
 
 export interface AdapterResult {
