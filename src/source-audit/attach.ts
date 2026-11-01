@@ -3,7 +3,7 @@ import path from "node:path";
 import { UsageError, isEnoent } from "../errors.js";
 import { validateFindings } from "../findings.js";
 import { assertPathInsideRepository } from "../profile.js";
-import { buildAttachFindingSummary, findingCounts, renderMarkdownReport } from "../reports.js";
+import { buildAttachFindingSummary, canonicalFindingsToSarif, findingCounts, renderMarkdownReport } from "../reports.js";
 import { readRepositoryGit } from "../scanner.js";
 import type { CanonicalFinding, ScanManifest, SourceAuditAttachment } from "../types.js";
 import { importCloudflareFindings, parseCloudflareFindings } from "./import.js";
@@ -359,6 +359,10 @@ async function attachInsideRepository(
     {
       filePath: path.join(reportDirectory, "report.md"),
       contents: renderMarkdownReport(manifest, merged),
+    },
+    {
+      filePath: path.join(reportDirectory, "findings.sarif.json"),
+      contents: `${JSON.stringify(canonicalFindingsToSarif(merged), null, 2)}\n`,
     },
   ]);
 

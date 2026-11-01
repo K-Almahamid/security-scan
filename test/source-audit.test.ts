@@ -398,6 +398,10 @@ describe("Cloudflare source-audit integration", () => {
     const again = JSON.parse(await readFile(path.join(reportDir, "findings.json"), "utf8")) as unknown[];
     assert.equal(again.length, beforeRepeat.length);
     assert.equal(again.length, 2);
+    const sarif = JSON.parse(await readFile(path.join(reportDir, "findings.sarif.json"), "utf8")) as {
+      runs: Array<{ results: unknown[] }>;
+    };
+    assert.equal(sarif.runs[0]?.results.length, again.length);
     const repeatedManifest = JSON.parse(await readFile(path.join(reportDir, "scan-manifest.json"), "utf8")) as ScanManifest;
     assert.equal(repeatedManifest.sourceAudit?.commitBinding, "matched");
     assert.equal(repeatedManifest.sourceAudit?.commitIdentity?.agreement, "attested-matches-scan");

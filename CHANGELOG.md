@@ -6,6 +6,7 @@
 - `security-scan version` reads `package.json` instead of a second hardcoded version string.
 - `doctor` reports a full audit as ready only when the Cloudflare skill is installed.
 - Report, audit, and workflow-assess paths reached through a directory symlink, such as macOS `/tmp`, stay inside the repository after `realpath`.
+- `audit attach` rewrites `findings.sarif.json` from the merged findings.
 
 ## 0.5.0
 
