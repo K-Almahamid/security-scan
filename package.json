@@ -20,7 +20,8 @@
     "README.md",
     "LICENSE",
     "CHANGELOG.md",
-    "SECURITY.md"
+    "SECURITY.md",
+    "docs"
   ],
   "type": "module",
   "bin": {

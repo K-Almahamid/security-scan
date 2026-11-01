@@ -13,6 +13,8 @@ Node.js 20 or newer is required. CI runs on Ubuntu with Node.js 22. macOS is use
 
 `npm run verify` runs unit tests, the vendored Cloudflare validator tests, typecheck, lint, and the TypeScript build. Docker and Dart tests run when those tools are visible. A skip is not a pass.
 
+See [docs/development.md](docs/development.md) for verification, packaging, and fixtures. Scanner and skill steps below are the short form of [docs/scanner-integration.md](docs/scanner-integration.md) and [docs/skill-integration.md](docs/skill-integration.md).
+
 ## Adding a scanner
 
 1. Implement `ToolAdapter` in `src/adapters.ts`: prerequisite check, execution, and a parser that returns canonical findings.

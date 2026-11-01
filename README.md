@@ -52,6 +52,15 @@ Deterministic-only
   push does not scan your application. Scans run on the machine where you
   invoke the CLI.
 
+Deeper documentation lives in [docs/](docs/architecture.md):
+
+- [Architecture](docs/architecture.md)
+- [Scanner integration](docs/scanner-integration.md)
+- [Audit skill integration](docs/skill-integration.md)
+- [Findings and reporting](docs/findings-and-reporting.md)
+- [Security model](docs/security-model.md)
+- [Development](docs/development.md)
+
 `audit validate`, `audit import`, and `audit attach` check and merge a findings
 file the agent already produced. They do not perform reconnaissance, hunting,
 or independent verification. A missing skill, a skipped phase, or a failed

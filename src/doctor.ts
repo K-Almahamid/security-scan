@@ -1,4 +1,5 @@
 import { access } from "node:fs/promises";
+import { createRequire } from "node:module";
 import { homedir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -10,7 +11,10 @@ import { evaluateCapabilityReadiness } from "./registry.js";
 import { assertRepositoryPath, profileRepository } from "./profile.js";
 import { cloudflareSkillCandidates, type WorkflowRequest } from "./workflow.js";
 
-export const CLI_VERSION = "0.5.0";
+/** Same version as package.json so `security-scan version` cannot drift from the package. */
+export const CLI_VERSION = (
+  createRequire(import.meta.url)("../package.json") as { version: string }
+).version;
 
 export interface DoctorCheck {
   id: string;

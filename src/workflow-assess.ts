@@ -264,6 +264,13 @@ async function persistAssessmentOnWorkflowRun(
   );
 }
 
+/**
+ * Exit code for `workflow assess`.
+ *
+ * Material inconsistencies in the workflow record are exit 3. An incomplete
+ * combined status or a deterministic exit of 2 stays 2. This does not invent
+ * a successful full audit when the Cloudflare hunt was not registered.
+ */
 export function workflowAssessExitCode(
   assessment: WorkflowAssessment,
   deterministicExitWouldBe: number,

@@ -27,6 +27,12 @@ const environmentAllowlist = [
   "XDG_CACHE_HOME",
 ];
 
+/**
+ * Environment passed to host processes.
+ *
+ * Copies only an allowlist from the parent process, then applies explicit
+ * additions. Scanner commands must not inherit credentials from the parent shell.
+ */
 export function allowedHostEnvironment(
   additions: Record<string, string> = {},
 ): NodeJS.ProcessEnv {
@@ -37,6 +43,15 @@ export function allowedHostEnvironment(
   return { ...clean, ...additions };
 }
 
+/**
+ * Runs a host command with a timeout and a byte cap on captured output.
+ *
+ * On timeout or truncation the process group is killed, except on Windows
+ * where only the child is killed. A truncated capture is a failed tool result
+ * upstream; this function does not decide scan status.
+ *
+ * @throws When the process cannot be spawned. Exit codes are returned, not thrown.
+ */
 export async function runCommand(
   command: string,
   args: string[],
@@ -135,6 +150,12 @@ function createBoundedCapture(
   };
 }
 
+/**
+ * Runs one pinned Compose service with the repository mounted by the compose file.
+ *
+ * The caller supplies scanner arguments. This function does not download images
+ * itself; Docker pulls on first use unless the image is already present.
+ */
 export async function runComposeTool(options: {
   composeFile: string;
   service: "trivy" | "semgrep";

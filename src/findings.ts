@@ -116,6 +116,11 @@ export function normalizeSeverity(value: unknown): Severity {
   return "unknown";
 }
 
+/**
+ * Replaces recognizable secret shapes and truncates long evidence.
+ *
+ * This is a best-effort filter. It does not prove that every secret was removed.
+ */
 export function redactSensitiveText(input: string, maxLength = 2_000): string {
   let output = input;
   for (const pattern of hashedSecretPatterns) {
@@ -156,6 +161,13 @@ export function normalizePath(repoPath: string, candidate: string): string {
   return relative || ".";
 }
 
+/**
+ * Builds one canonical finding from a parsed scanner row.
+ *
+ * The fingerprint is stable for the category, location, and rule or advisory.
+ * The random `id` is not. Evidence and title text are redacted before storage.
+ * Provenance starts as `deterministic`; source-audit import overwrites that later.
+ */
 export function createFinding(input: {
   title: string;
   description?: string;
@@ -244,6 +256,13 @@ export function createFinding(input: {
   };
 }
 
+/**
+ * Collapses findings that share a fingerprint and keeps every distinct source.
+ *
+ * A higher severity replaces a lower one in the same group. Related cleartext
+ * HTTP sinks stay separate and only share `relatedGroupId`. Docker missing-user
+ * findings from Trivy and Semgrep share one fingerprint when the path matches.
+ */
 export function deduplicateFindings(findings: CanonicalFinding[]): CanonicalFinding[] {
   const groups = new Map<string, CanonicalFinding>();
   for (const finding of findings) {

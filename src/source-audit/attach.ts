@@ -95,6 +95,17 @@ export async function loadAttestedAuditIdentity(
   return parseAttestedAuditIdentity(parsed);
 }
 
+/**
+ * Compares agent-attested identity with the commit the CLI recorded at scan time.
+ *
+ * `--target-commit` and a sidecar commit must agree. A known dirty-state
+ * disagreement is rejected. HEAD moving after the scan is recorded as
+ * `observed` and is not, by itself, a contradiction.
+ * `matched` means the attestation equals a clean recorded commit. It is not
+ * proof that a hunt process ran.
+ *
+ * @returns A binding, or a message suitable for exit code 3. Does not write files.
+ */
 export function resolveAuditCommitBinding(input: {
   git: ScanManifest["git"];
   targetCommit?: string | undefined;
@@ -212,6 +223,13 @@ export interface AttachSourceAuditResult {
   mergedFindings?: CanonicalFinding[];
 }
 
+/**
+ * Validates a Cloudflare findings file and merges importable records into a scan report.
+ *
+ * Writes are atomic per file with backups. A binding or schema failure returns
+ * exit code 3 and leaves the report unchanged. Repeating the same attach does
+ * not multiply sources.
+ */
 export async function attachSourceAuditToReport(
   options: AttachSourceAuditOptions,
 ): Promise<AttachSourceAuditResult> {
@@ -407,6 +425,12 @@ function commitBindingNote(binding: AuditCommitBinding, identity: AuditCommitIde
   return "The audit did not attest a commit. Attachment does not claim the hunt reviewed this scan's revision." + divergence;
 }
 
+/**
+ * Replaces report files only after every temp file is written.
+ *
+ * Existing files are copied aside first. A failure restores those backups and
+ * deletes files that did not exist before the attempt.
+ */
 export async function commitReportFiles(
   files: { filePath: string; contents: string }[],
   renameFile: (from: string, to: string) => Promise<void> = rename,

@@ -15,6 +15,11 @@ const ignoredDirectories = new Set([
   "security-reports",
 ]);
 
+/**
+ * Resolves a repository path to a canonical directory.
+ *
+ * @throws {UsageError} When the path is missing or is not a directory.
+ */
 export async function assertRepositoryPath(input: string): Promise<string> {
   try {
     const canonical = await realpath(path.resolve(input));
@@ -30,6 +35,14 @@ export async function assertRepositoryPath(input: string): Promise<string> {
   }
 }
 
+/**
+ * Resolves a path that must stay inside the repository, including through symlinks.
+ *
+ * A missing final segment is allowed so a new report directory can be created.
+ * A symlink whose target is outside the repository, or cannot be resolved, is rejected.
+ *
+ * @throws {UsageError} When the path escapes the repository.
+ */
 export async function assertPathInsideRepository(
   repoPath: string,
   candidate: string,
@@ -68,6 +81,14 @@ export async function assertPathInsideRepository(
   return fromInputRepo === "" ? repo : resolved;
 }
 
+/**
+ * Walks the repository and refuses the scan when any symlink escapes it.
+ *
+ * Directories that are build or dependency output are not descended into.
+ * An unresolvable symlink is also a refusal: the scan does not guess the target.
+ *
+ * @throws {UsageError} When a symlink is outside the repository or cannot be resolved.
+ */
 export async function assertNoEscapingSymlinks(repoPath: string): Promise<void> {
   const repo = await realpath(repoPath);
   async function visit(directory: string): Promise<void> {

@@ -68,6 +68,16 @@ export interface ScanOutcome {
   exitCode: number;
 }
 
+/**
+ * Profiles a repository, runs the planned adapters, and writes one report.
+ *
+ * A required tool that cannot run leaves the scan incomplete (exit 2).
+ * An empty plan is a usage error (exit 3), not a clean scan.
+ * The scan-owned raw cache is removed in `finally`, including when a tool throws.
+ * Historical report directories are not deleted.
+ *
+ * @throws {UsageError} For an unusable repository, an escaping symlink, or an empty plan.
+ */
 export async function runSecurityScan(options: ScanOptions): Promise<ScanOutcome> {
   const startedAt = new Date();
   const repoPath = await assertRepositoryPath(options.repo);
@@ -176,6 +186,13 @@ export async function runSecurityScan(options: ScanOptions): Promise<ScanOutcome
   }
 }
 
+/**
+ * Maps a finished deterministic scan to exit codes 0, 1, 2, or 3.
+ *
+ * Incomplete execution is 2 even when findings exist. Configuration errors are 3.
+ * Exit 1 means at least one finding is at or above the threshold on a completed scan.
+ * Exit 4 is reserved for unexpected orchestration failures in the CLI, not here.
+ */
 export function scanExitCode(
   status: OverallStatus,
   findings: CanonicalFinding[],
@@ -207,6 +224,13 @@ function applyOverrides(
   };
 }
 
+/**
+ * Runs one planned tool through its adapter.
+ *
+ * A missing prerequisite skips an optional tool and fails a required tool.
+ * Adapter exceptions become failed tool runs, except {@link UsageError}, which
+ * aborts the scan because the target itself is unsafe to continue.
+ */
 export async function dispatchTool(
   adapters: Map<string, ToolAdapter>,
   toolPlan: ToolPlan,
@@ -261,6 +285,12 @@ function createScanId(date: Date, commit: string | null): string {
   return `${date.toISOString().replace(/[:.]/g, "-")}-${revision}`;
 }
 
+/**
+ * Records HEAD and whether the worktree is dirty.
+ *
+ * A missing git binary, a non-commit HEAD, or a failed status command yields
+ * null fields. Null is "not observed", not a claim that the tree is clean.
+ */
 export async function readRepositoryGit(repoPath: string): Promise<{
   commit: string | null;
   dirty: boolean | null;

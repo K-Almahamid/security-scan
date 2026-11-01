@@ -40,6 +40,13 @@ function sumRecordedParseDiscards(toolRuns: ToolRun[]): number | null {
   return toolRuns.reduce((total, run) => total + (run.discardedDuringParse ?? 0), 0);
 }
 
+/**
+ * Counts accepted rows, parser discards, and scan-time duplicates for a new manifest.
+ *
+ * A missing `discardedDuringParse` on a fresh tool run counts as 0. Attach-time
+ * accounting uses {@link buildAttachFindingSummary} so a missing historical
+ * field stays null instead of becoming a fake zero.
+ */
 export function buildScanFindingSummary(input: {
   toolRuns: ToolRun[];
   collectedFindings: CanonicalFinding[];
@@ -152,6 +159,12 @@ export function coverageSummary(
   };
 }
 
+/**
+ * Writes a new report directory by staging files and renaming the directory into place.
+ *
+ * A failure deletes the staging directory and does not replace an existing report.
+ * Scan ids include a timestamp, so this does not overwrite historical reports.
+ */
 export async function writeReports(input: {
   reportDirectory: string;
   profile: RepositoryProfile;
@@ -448,7 +461,13 @@ const sarifLevel: Record<Severity, "error" | "warning" | "note" | "none"> = {
   unknown: "none",
 };
 
-/** SARIF 2.1.0 export. Canonical JSON remains the source of truth. */
+/**
+ * Maps canonical findings to a SARIF 2.1.0 document.
+ *
+ * Only fields this CLI can fill are emitted. Rule text is the finding title.
+ * Redacted evidence is not copied into the SARIF message. Canonical JSON stays
+ * the source of truth.
+ */
 export function canonicalFindingsToSarif(findings: CanonicalFinding[]): {
   version: "2.1.0";
   runs: Array<{

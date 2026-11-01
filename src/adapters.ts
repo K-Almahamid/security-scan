@@ -54,6 +54,12 @@ const MAX_ANALYSIS_OPTIONS_BYTES = 262_144;
 export type DartPluginAssessment = "safe" | "plugins" | "undetermined";
 
 /** True when analysis_options.yaml asks the Dart analyzer to load plugins. */
+/**
+ * True when this options file directly declares analyzer plugins.
+ *
+ * An `include:` line is not itself a plugin declaration. Callers that need the
+ * included file must use {@link assessDartAnalyzerPlugins}.
+ */
 export function analysisOptionsDeclarePlugins(source: string): boolean {
   const lines = source.split(/\r?\n/);
   let inAnalyzer = false;
@@ -74,6 +80,13 @@ export function analysisOptionsDeclarePlugins(source: string): boolean {
   return false;
 }
 
+/**
+ * Reason to skip host `dart analyze`, or null when the operator opted in or the chain is safe.
+ *
+ * Project configuration cannot set the opt-in. An undetermined include chain
+ * skips analysis for the same reason a declared plugin does: the host would
+ * otherwise execute repository-controlled analyzer code.
+ */
 export async function dartAnalyzerPluginSkipReason(
   repoPath: string,
   targetPath: string,
@@ -382,6 +395,12 @@ export function readSemgrepDocument(input: unknown): SemgrepDocumentReadResult {
   };
 }
 
+/**
+ * Marks a Semgrep run failed when the document reports partial parsing.
+ *
+ * Parsed findings are kept. A process exit code of 0 does not override this.
+ * Blocking rule errors are rejected earlier and do not reach this function as valid documents.
+ */
 export function applySemgrepCompletionPolicy(
   completion: ToolCompletion,
   assessment: SemgrepDocumentReadResult,
@@ -1090,6 +1109,11 @@ export function parseSemgrepDocument(
   return { findings, rawCount: input.results.length, discarded };
 }
 
+/**
+ * Converts a Gitleaks JSON array into canonical findings.
+ *
+ * `Secret` and `Match` are never copied. A non-array document counts as one discard.
+ */
 export function parseGitleaksDocument(document: unknown, repoPath: string): ScannerParse {
   if (!Array.isArray(document)) return { findings: [], rawCount: 0, discarded: 1 };
   const findings: CanonicalFinding[] = [];

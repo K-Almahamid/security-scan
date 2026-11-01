@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- Documented architecture, scanner and skill integration, findings, the security model, and development workflow under `docs/`.
+- `security-scan version` reads `package.json` instead of a second hardcoded version string.
+
 ## 0.5.0
 
 - Host Dart analysis follows `include:` chains and skips when plugin safety cannot be determined unless `--allow-dart-plugins` is set.

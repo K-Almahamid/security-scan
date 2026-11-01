@@ -91,6 +91,10 @@ export interface DependencyInterpretation {
   publisherVerification: "not_performed";
 }
 
+/**
+ * One normalized issue. `fingerprint` is the dedupe identity. `id` is unique per write.
+ * `sources` keeps every tool that reported the issue. `verification` is not a proof of exploitability.
+ */
 export interface CanonicalFinding {
   id: string;
   fingerprint: string;

@@ -294,6 +294,12 @@ export function planCapability(
   };
 }
 
+/**
+ * Builds the scan plan from the capability registry and the repository profile.
+ *
+ * Disabled and inapplicable capabilities are recorded as gaps, not as silent skips.
+ * An unknown adapter id is rejected before any tool runs.
+ */
 export function planScanFromRegistry(
   profile: RepositoryProfile,
   config: SecurityScanConfig,

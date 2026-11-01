@@ -1,3 +1,4 @@
+/** Caller or target input is unusable. CLI commands map this to exit code 3. */
 export class UsageError extends Error {
   readonly exitCode = 3 as const;
 
