@@ -51,6 +51,19 @@ export async function assertPathInsideRepository(
   const resolvedInput = path.resolve(repoPath, candidate);
   const fromInputRepo = path.relative(path.resolve(repoPath), resolvedInput);
   if (fromInputRepo.startsWith("..") || path.isAbsolute(fromInputRepo)) {
+    // macOS /tmp is a symlink to /private/tmp. Accept that alias only when the
+    // resolved path is still inside the repository. A symlink that leaves the
+    // repository stays rejected below when its lexical path is inside.
+    try {
+      const realCandidate = await realpath(resolvedInput);
+      const realRelative = path.relative(repo, realCandidate);
+      if (realRelative === "" || (!realRelative.startsWith("..") && !path.isAbsolute(realRelative))) {
+        return realCandidate;
+      }
+    } catch (error) {
+      if (error instanceof UsageError) throw error;
+      if (!isEnoent(error)) throw error;
+    }
     throw new UsageError("Path must remain inside the target repository");
   }
   const resolved = fromInputRepo === "" ? repo : path.resolve(repo, fromInputRepo);

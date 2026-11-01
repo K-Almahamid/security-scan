@@ -234,27 +234,38 @@ function summarize(
   repositoryPath: string,
   nodeVersion: string,
 ): DoctorReport {
-  const fullFails = checks.some(
-    (check) =>
-      workflowRequest === "full" &&
-      (check.id === "cloudflare-security-audit-skill" && check.status === "fail"),
-  );
+  const readiness = deriveDoctorReadiness(checks);
+  return {
+    version: CLI_VERSION,
+    nodeVersion,
+    repositoryPath,
+    workflowRequest,
+    ready: workflowRequest === "full" ? readiness.fullAuditReady : readiness.deterministicReady,
+    deterministicReady: readiness.deterministicReady,
+    fullAuditReady: readiness.fullAuditReady,
+    checks,
+  };
+}
+
+/**
+ * Full-audit readiness requires the deterministic scanners and the installed
+ * Cloudflare skill. A deterministic-only request does not make the skill present.
+ */
+export function deriveDoctorReadiness(
+  checks: DoctorCheck[],
+): { deterministicReady: boolean; fullAuditReady: boolean } {
   const deterministicReady = !checks.some(
     (check) =>
       check.category === "required" &&
       check.status === "fail" &&
       check.id !== "cloudflare-security-audit-skill",
   );
-  const fullAuditReady = deterministicReady && !fullFails;
+  const skillInstalled = checks.some(
+    (check) => check.id === "cloudflare-security-audit-skill" && check.status === "pass",
+  );
   return {
-    version: CLI_VERSION,
-    nodeVersion,
-    repositoryPath,
-    workflowRequest,
-    ready: workflowRequest === "full" ? fullAuditReady : deterministicReady,
     deterministicReady,
-    fullAuditReady,
-    checks,
+    fullAuditReady: deterministicReady && skillInstalled,
   };
 }
 

@@ -37,10 +37,10 @@ export async function assessWorkflowFromReport(input: {
   request?: WorkflowRequest;
 }): Promise<WorkflowAssessResult> {
   const repoPath = await assertRepositoryPath(input.repo);
-  const reportDirectory = path.isAbsolute(input.scanDir)
+  const requestedReport = path.isAbsolute(input.scanDir)
     ? input.scanDir
     : path.resolve(repoPath, input.scanDir);
-  await assertPathInsideRepository(repoPath, reportDirectory);
+  const reportDirectory = await assertPathInsideRepository(repoPath, requestedReport);
 
   const manifestPath = path.join(reportDirectory, "scan-manifest.json");
   let manifest: ScanManifest;

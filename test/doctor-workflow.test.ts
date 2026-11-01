@@ -1,11 +1,11 @@
 import assert from "node:assert/strict";
-import { cp, mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { cp, mkdir, mkdtemp, readFile, realpath, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { describe, it } from "node:test";
-import { doctorExitCode, runDoctor } from "../src/doctor.js";
+import { deriveDoctorReadiness, doctorExitCode, runDoctor } from "../src/doctor.js";
 import { DEFAULT_MAX_CAPTURE_BYTES, runCommand } from "../src/execution.js";
 import { allowedHostEnvironment } from "../src/execution.js";
 import { writeReports } from "../src/reports.js";
@@ -38,6 +38,21 @@ function runCli(args: string[]) {
 }
 
 describe("doctor and workflow commands", () => {
+  it("does not call a full audit ready when the Cloudflare skill is absent", () => {
+    const checks = [
+      { id: "docker-compose", category: "required" as const, status: "pass" as const, message: "ok" },
+      {
+        id: "cloudflare-security-audit-skill",
+        category: "optional" as const,
+        status: "warn" as const,
+        message: "missing",
+      },
+    ];
+    const readiness = deriveDoctorReadiness(checks);
+    assert.equal(readiness.deterministicReady, true);
+    assert.equal(readiness.fullAuditReady, false);
+  });
+
   it("reports repository and docker prerequisites", async () => {
     const repo = await mkdtemp(path.join(os.tmpdir(), "security-scan-doctor-"));
     await writeFile(path.join(repo, "package.json"), JSON.stringify({ name: "fixture" }));
@@ -56,7 +71,72 @@ describe("doctor and workflow commands", () => {
     assert.ok(cloudflare);
     if (cloudflare.status === "fail") {
       assert.equal(doctorExitCode(report), 1);
+      assert.equal(report.fullAuditReady, false);
     }
+    if (cloudflare.status !== "pass") {
+      assert.equal(report.fullAuditReady, false);
+    }
+  });
+
+  it("assesses a report reached through a directory symlink", async () => {
+    const repo = await mkdtemp(path.join(os.tmpdir(), "security-scan-assess-alias-"));
+    const canonical = await realpath(repo);
+    const reportDir = path.join(canonical, "security-reports", "scan-1");
+    await mkdir(reportDir, { recursive: true });
+    const startedAt = "2026-01-01T00:00:00.000Z";
+    const manifest: ScanManifest = {
+      schemaVersion: 2,
+      scanId: "scan-1",
+      repositoryPath: canonical,
+      reportDirectory: reportDir,
+      startedAt,
+      completedAt: "2026-01-01T00:05:00.000Z",
+      overallStatus: "complete",
+      mode: "standard",
+      toolRuns: [],
+      execution: { status: "complete", planned: 0, completed: 0, failed: 0, skipped: 0, unsupported: 0 },
+      coverage: {
+        comprehensive: false,
+        plannedStatus: "complete",
+        plannedChecks: [],
+        supportedChecks: [],
+        outOfScope: [],
+        unsupported: [],
+      },
+      coverageGaps: [],
+      counts: { critical: 0, high: 0, medium: 0, low: 0, info: 0, unknown: 0 },
+      findingSummary: {
+        perTool: [],
+        rawToolFindingsTotal: 0,
+        preDedupeCollected: 0,
+        normalizedUnique: 0,
+        duplicatesRemoved: 0,
+        discardedDuringParse: 0,
+      },
+    };
+    const record = recordDeterministicScanCompletion(
+      createInitialWorkflowRun({
+        scanId: "scan-1",
+        repositoryPath: canonical,
+        request: "deterministic-only",
+        startedAt,
+      }),
+      manifest,
+    );
+    await writeFile(path.join(reportDir, "scan-manifest.json"), `${JSON.stringify(manifest)}\n`);
+    await writeFile(path.join(reportDir, "findings.json"), "[]\n");
+    await writeFile(path.join(reportDir, WORKFLOW_RUN_FILENAME), `${JSON.stringify(record)}\n`);
+    const aliasParent = await mkdtemp(path.join(os.tmpdir(), "security-scan-assess-link-"));
+    const alias = path.join(aliasParent, "repo");
+    await symlink(canonical, alias);
+    const result = await assessWorkflowFromReport({
+      repo: alias,
+      scanDir: path.join(alias, "security-reports", "scan-1"),
+    });
+    assert.equal(
+      result.inconsistencies.some((issue) => issue.includes("reportDirectory")),
+      false,
+    );
   });
 });
 

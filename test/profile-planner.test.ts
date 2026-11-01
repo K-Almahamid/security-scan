@@ -1,11 +1,11 @@
 import assert from "node:assert/strict";
-import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { after, describe, it } from "node:test";
 import { defaultConfig, loadConfig } from "../src/config.js";
 import { buildScanPlan } from "../src/planner.js";
-import { assertNoEscapingSymlinks, profileRepository } from "../src/profile.js";
+import { assertNoEscapingSymlinks, assertPathInsideRepository, profileRepository } from "../src/profile.js";
 import { coverageSummary } from "../src/reports.js";
 
 const roots: string[] = [];
@@ -119,5 +119,17 @@ describe("repository profiler and planner", () => {
       JSON.stringify({ version: 1, policy: { allowFailedTools: true } }),
     );
     await assert.rejects(() => loadConfig(root), /allowFailedTools/);
+  });
+
+  it("accepts a repository path reached through a directory symlink", async () => {
+    const root = await fixtureRoot();
+    const report = path.join(root, "security-reports", "scan");
+    await mkdir(report, { recursive: true });
+    const aliasParent = await mkdtemp(path.join(os.tmpdir(), "security-scan-alias-"));
+    roots.push(aliasParent);
+    const alias = path.join(aliasParent, "repo");
+    await symlink(await realpath(root), alias);
+    const resolved = await assertPathInsideRepository(root, path.join(alias, "security-reports", "scan"));
+    assert.equal(resolved, await realpath(report));
   });
 });
